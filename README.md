@@ -40,7 +40,8 @@ before generating the project:
 
 ```bash
 cp Config/Signing.local.xcconfig.example Config/Signing.local.xcconfig
-# Edit Signing.local.xcconfig and replace YOUR_TEAM_ID.
+# Edit Signing.local.xcconfig and replace YOUR_TEAM_ID. With a personal (free)
+# team, also set CODEG_BUNDLE_IDENTIFIER to an identifier of your own.
 xcodegen generate
 ```
 

@@ -44,7 +44,9 @@ targets:
       - package: SwiftTerm
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.codeg.ios
+        # Defaults to app.codeg.ios in Config/Signing.xcconfig; a personal team
+        # overrides it in the ignored Signing.local.xcconfig.
+        PRODUCT_BUNDLE_IDENTIFIER: "$(CODEG_BUNDLE_IDENTIFIER)"
         PRODUCT_NAME: Codeg
         MARKETING_VERSION: "1.0.1"
         CURRENT_PROJECT_VERSION: "2"

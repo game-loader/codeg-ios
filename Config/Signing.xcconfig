@@ -1,5 +1,8 @@
 // Shared signing defaults. Keep personal team identifiers out of source control.
 CODEG_DEVELOPMENT_TEAM =
+// Registered to the upstream team, so a personal (free) team can't sign with
+// it — override it in Signing.local.xcconfig.
+CODEG_BUNDLE_IDENTIFIER = app.codeg.ios
 
 // Optional developer-local override (ignored by Git).
 #include? "Signing.local.xcconfig"

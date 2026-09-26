@@ -26,6 +26,9 @@ the text as the git tag message and the GitHub Release notes.
 
 - Apple signing now uses an ignored local configuration instead of a committed
   development team identifier.
+- The bundle identifier can be overridden the same way
+  (`CODEG_BUNDLE_IDENTIFIER`), so the app can be signed with a personal (free)
+  Apple ID team.
 - An `error` event no longer ends the turn: like the web client, only
   `turn_complete` or a dropped connection does, and errors are routed by code
   (turn failure, action notice, or session problem).

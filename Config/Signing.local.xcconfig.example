@@ -1,2 +1,6 @@
 // Copy this file to Signing.local.xcconfig and replace the placeholder.
 CODEG_DEVELOPMENT_TEAM = YOUR_TEAM_ID
+
+// With a personal (free) Apple ID team, also pick a bundle identifier of your
+// own — the default app.codeg.ios belongs to the upstream team.
+// CODEG_BUNDLE_IDENTIFIER = com.example.codeg
