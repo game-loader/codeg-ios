@@ -251,7 +251,7 @@ private struct AgentOptionsSheet: View {
         return Menu {
             Picker("Folder", selection: binding) {
                 ForEach(ns.availableFolders) { folder in
-                    Label(folder.name, systemImage: "folder").tag(Optional(folder.id))
+                    Label(folder.displayName, systemImage: "folder").tag(Optional(folder.id))
                 }
             }
         } label: {
@@ -436,7 +436,16 @@ private struct AgentOptionsSheet: View {
     private func configSection(_ option: SessionConfigOption) -> some View {
         let groups = option.kind.selectGroups ?? []
         let flat = option.kind.selectOptions ?? []
-        if !groups.isEmpty {
+        if case .boolean = option.kind {
+            // An on/off option renders as a two-row On / Off choice — the same
+            // shape the web's collapsed settings panel gives it — so it reuses the
+            // radio rows and the config apply/reconcile path unchanged.
+            OptionSection(title: Text(verbatim: option.name)) {
+                booleanRow(option: option, value: SessionConfigKind.booleanOn, title: String(localized: "On"))
+                rowSeparator
+                booleanRow(option: option, value: SessionConfigKind.booleanOff, title: String(localized: "Off"))
+            }
+        } else if !groups.isEmpty {
             OptionSection(title: Text(verbatim: option.name)) {
                 ForEach(Array(groups.enumerated()), id: \.element.id) { groupIndex, group in
                     if groupIndex > 0 { rowSeparator }
@@ -465,6 +474,17 @@ private struct AgentOptionsSheet: View {
             isApplying: options.applying.contains(option.id) && options.selectedConfig[option.id] == choice.value,
             disabled: isBusy || options.applying.contains(option.id),
             action: { options.selectConfig(optionId: option.id, valueId: choice.value) }
+        )
+    }
+
+    private func booleanRow(option: SessionConfigOption, value: String, title: String) -> some View {
+        OptionRow(
+            title: title,
+            subtitle: nil,
+            isSelected: options.selectedConfig[option.id] == value,
+            isApplying: options.applying.contains(option.id) && options.selectedConfig[option.id] == value,
+            disabled: isBusy || options.applying.contains(option.id),
+            action: { options.selectConfig(optionId: option.id, valueId: value) }
         )
     }
 

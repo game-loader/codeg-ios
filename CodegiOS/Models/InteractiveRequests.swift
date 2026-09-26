@@ -30,6 +30,24 @@ struct QuestionSpec: Decodable, Hashable, Sendable, Identifiable {
     let header: String
     let multiSelect: Bool
     let options: [QuestionOption]
+    /// The answer is a secret (codex marks API keys this way): the card masks
+    /// the free-text input. The server only sends the key when true.
+    var isSecret: Bool = false
+}
+
+// Decoding lives in an extension so the memberwise initializer survives.
+extension QuestionSpec {
+    private enum CodingKeys: String, CodingKey { case id, question, header, multiSelect, options, isSecret }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        question = try c.decode(String.self, forKey: .question)
+        header = try c.decode(String.self, forKey: .header)
+        multiSelect = try c.decode(Bool.self, forKey: .multiSelect)
+        options = try c.decode([QuestionOption].self, forKey: .options)
+        isSecret = try c.decodeIfPresent(Bool.self, forKey: .isSecret) ?? false
+    }
 }
 
 /// One question's answer: the per-question id plus the chosen option label
@@ -103,12 +121,16 @@ struct PendingPermission: Identifiable {
     let requestId: String
     let parsed: ParsedPermission
     let options: [PermissionOption]
+    /// Further requests queued behind this card (the server shows one at a time),
+    /// kept current by `permission_queue_depth`.
+    var queued: Int
     var id: String { requestId }
 
-    init(requestId: String, toolCall: AnyJSON, options: [PermissionOption]) {
+    init(requestId: String, toolCall: AnyJSON, options: [PermissionOption], queued: Int = 0) {
         self.requestId = requestId
         self.parsed = ParsedPermission.parse(toolCall)
         self.options = options
+        self.queued = queued
     }
 }
 

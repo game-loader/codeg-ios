@@ -39,7 +39,9 @@ enum ContentBlock: Hashable, Sendable, Decodable {
     case thinking(String)
     case image(ImageData)
     case imageGeneration(revisedPrompt: String?, image: ImageData?)
-    case toolUse(id: String?, name: String, inputPreview: String?, meta: AnyJSON?)
+    /// `status` is the agent's own recorded call status (`pending` / `in_progress`
+    /// / `completed` / `failed`); nil means UNKNOWN, never "settled".
+    case toolUse(id: String?, name: String, inputPreview: String?, meta: AnyJSON?, status: String? = nil)
     case toolResult(id: String?, outputPreview: String?, isError: Bool)
     case unknown(type: String)
 
@@ -47,7 +49,7 @@ enum ContentBlock: Hashable, Sendable, Decodable {
         // NOTE: the decoder uses `.convertFromSnakeCase`, so wire keys arrive
         // here already camelCased — match them in camelCase.
         case type, text, data, mimeType, uri, revisedPrompt, image
-        case toolUseId, toolName, inputPreview, meta
+        case toolUseId, toolName, inputPreview, meta, status
         case outputPreview, isError
     }
 
@@ -77,7 +79,8 @@ enum ContentBlock: Hashable, Sendable, Decodable {
                 inputPreview: try c.decodeIfPresent(String.self, forKey: .inputPreview),
                 // `meta["codeg.delegation"]` carries the delegate card's authoritative
                 // terminal status; nil for tool uses without any meta.
-                meta: try c.decodeIfPresent(AnyJSON.self, forKey: .meta)
+                meta: try c.decodeIfPresent(AnyJSON.self, forKey: .meta),
+                status: try c.decodeIfPresent(String.self, forKey: .status)
             )
         case "tool_result":
             self = .toolResult(

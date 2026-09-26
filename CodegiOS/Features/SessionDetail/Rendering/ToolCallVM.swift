@@ -134,14 +134,26 @@ enum MessageRender {
             case .imageGeneration(let prompt, let img):
                 if let img { parts.append(.image(img, caption: prompt)) }
                 else if let prompt, !prompt.isEmpty { parts.append(.text(prompt)) }
-            case .toolUse(let toolID, let name, let inputPreview, let meta):
+            case .toolUse(let toolID, let name, let inputPreview, let meta, let status):
                 let resultIdx = findResult(in: blocks, after: idx, toolID: toolID, consumed: consumed)
                 var output: String?
                 var isErr = false
                 if let r = resultIdx, case .toolResult(_, let outPreview, let e) = blocks[r] {
                     output = outPreview; isErr = e; consumed.insert(r)
                 }
-                let state: ToolCallState = resultIdx == nil ? .running : (isErr ? .error : .done)
+                // No result is not evidence the call is still running (an empty
+                // grok/codex call settles without one) — so when the transcript
+                // records a terminal status, trust it over the missing result.
+                let state: ToolCallState
+                if resultIdx != nil {
+                    state = isErr ? .error : .done
+                } else {
+                    switch status?.lowercased() {
+                    case "completed": state = .done
+                    case "failed": state = .error; isErr = true
+                    default: state = .running
+                    }
+                }
                 // A compaction is a boundary marker, not a call: it renders as a
                 // divider between turns, so it never becomes a `ToolCallVM` (and so
                 // can't be swept into a tool group).

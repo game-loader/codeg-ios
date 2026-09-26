@@ -325,7 +325,7 @@ private struct NewSessionHeaderCard: View {
                     HStack(spacing: 4) {
                         Image(systemName: "folder")
                             .font(.system(size: 9, weight: .semibold))
-                        Text(folder.name)
+                        Text(folder.displayName)
                             .font(.caption2.weight(.medium))
                             .lineLimit(1)
                     }
@@ -435,7 +435,7 @@ private struct SessionDetailsSheet: View {
             DetailRow(label: "Status", value: Text(summary.status.label))
             Divider().overlay(Theme.hairline)
             if let folder {
-                DetailRow(label: "Folder", value: Text(verbatim: folder.name))
+                DetailRow(label: "Folder", value: Text(verbatim: folder.displayName))
                 Divider().overlay(Theme.hairline)
             }
             DetailRow(label: "Messages", value: Text(verbatim: "\(summary.messageCount)"))

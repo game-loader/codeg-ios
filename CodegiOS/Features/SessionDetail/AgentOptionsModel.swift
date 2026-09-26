@@ -171,7 +171,7 @@ final class AgentOptionsModel {
         snapshot = options
         selectedModeId = snap.modes?.currentModeId ?? snap.currentMode ?? selectedModeId
         for option in snap.configOptions ?? [] {
-            if let current = option.kind.selectCurrentValue, !current.isEmpty {
+            if let current = option.kind.currentValueID, !current.isEmpty {
                 selectedConfig[option.id] = current
             }
         }
@@ -195,9 +195,9 @@ final class AgentOptionsModel {
             }
         }
         for option in snap.configOptions where selectedConfig[option.id] == nil {
-            if let saved = prefs.configValues?[option.id], option.kind.allSelectValues.contains(saved) {
+            if let saved = prefs.configValues?[option.id], option.kind.allValueIDs.contains(saved) {
                 selectedConfig[option.id] = saved
-            } else if let current = option.kind.selectCurrentValue, !current.isEmpty {
+            } else if let current = option.kind.currentValueID, !current.isEmpty {
                 selectedConfig[option.id] = current
             }
         }
@@ -313,7 +313,7 @@ final class AgentOptionsModel {
 
     private func currentValue(forKey key: String, in snap: SessionSnapshot) -> String? {
         if key == "mode" { return snap.modes?.currentModeId ?? snap.currentMode }
-        return snap.configOptions?.first { $0.id == key }?.kind.selectCurrentValue
+        return snap.configOptions?.first { $0.id == key }?.kind.currentValueID
     }
 
     private func setSelection(key: String, value: String) {

@@ -98,7 +98,7 @@ struct SessionModeInfo: Hashable, Sendable, Decodable, Identifiable {
 }
 
 /// One configurable option (Rust `SessionConfigOptionInfo`), e.g. a model
-/// selector. `kind` carries the concrete control (currently only `select`).
+/// selector. `kind` carries the concrete control (`select` or `boolean`).
 struct SessionConfigOption: Hashable, Sendable, Decodable, Identifiable {
     let id: String
     let name: String
@@ -108,10 +108,14 @@ struct SessionConfigOption: Hashable, Sendable, Decodable, Identifiable {
 }
 
 /// The control behind a `SessionConfigOption` (Rust `SessionConfigKindInfo`,
-/// internally tagged by `type`). Only `select` is modeled; unknown future kinds
-/// decode to `.unknown` rather than throwing.
+/// internally tagged by `type`). Unknown future kinds decode to `.unknown`
+/// rather than throwing.
 enum SessionConfigKind: Hashable, Sendable, Decodable {
     case select(currentValue: String, options: [SessionConfigSelectOption], groups: [SessionConfigSelectGroup])
+    /// An on/off option. The selector transport carries its value as the string
+    /// `"true"` / `"false"` (the server encodes it for the agent), so it reuses
+    /// the same `acp_set_config_option` path as a select.
+    case boolean(currentValue: Bool)
     case unknown(type: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -128,6 +132,8 @@ enum SessionConfigKind: Hashable, Sendable, Decodable {
                 options: try c.decodeIfPresent([SessionConfigSelectOption].self, forKey: .options) ?? [],
                 groups: try c.decodeIfPresent([SessionConfigSelectGroup].self, forKey: .groups) ?? []
             )
+        case "boolean":
+            self = .boolean(currentValue: try c.decodeIfPresent(Bool.self, forKey: .currentValue) ?? false)
         default:
             self = .unknown(type: type)
         }
@@ -148,18 +154,31 @@ enum SessionConfigKind: Hashable, Sendable, Decodable {
         return nil
     }
 
-    /// The current value of a `select`, nil for any other kind.
-    var selectCurrentValue: String? {
-        if case .select(let value, _, _) = self { return value }
-        return nil
+    /// The current value as the selector transport carries it: a `select`'s
+    /// value, or `"true"` / `"false"` for a boolean. Nil for an unknown kind.
+    var currentValueID: String? {
+        switch self {
+        case .select(let value, _, _): return value
+        case .boolean(let on): return on ? SessionConfigKind.booleanOn : SessionConfigKind.booleanOff
+        case .unknown: return nil
+        }
     }
 
-    /// Every selectable value (flat + grouped) — used to validate a cached
-    /// preference against the live catalog before pre-selecting it.
-    var allSelectValues: [String] {
-        guard case .select(_, let options, let groups) = self else { return [] }
-        return options.map(\.value) + groups.flatMap { $0.options.map(\.value) }
+    /// Every selectable value (flat + grouped, or both boolean states) — used to
+    /// validate a cached preference against the live catalog before pre-selecting it.
+    var allValueIDs: [String] {
+        switch self {
+        case .select(_, let options, let groups):
+            return options.map(\.value) + groups.flatMap { $0.options.map(\.value) }
+        case .boolean:
+            return [SessionConfigKind.booleanOn, SessionConfigKind.booleanOff]
+        case .unknown:
+            return []
+        }
     }
+
+    static let booleanOn = "true"
+    static let booleanOff = "false"
 }
 
 /// One choice in a `select` config option (Rust `SessionConfigSelectOptionInfo`).

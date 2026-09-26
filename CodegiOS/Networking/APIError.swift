@@ -63,12 +63,17 @@ enum APIError: LocalizedError, Sendable {
     }
 
     /// True for conditions where a fresh `acp_connect` + retry is the right fix.
+    /// The server wraps most connection-scoped failures (e.g. `acp_prompt` on a
+    /// reaped connection) as a generic 500 `task_execution_failed` carrying
+    /// `AcpError::ConnectionNotFound`'s text — so, like the web's
+    /// `isConnectionGoneError`, the message is matched too.
     var isStaleConnection: Bool {
         switch self {
         case .streamGone:
             return true
-        case .server(let status, let code, _):
+        case .server(let status, let code, let message):
             return status == 404 || code == "connection_not_found" || code == "unknown_connection"
+                || message.lowercased().contains("connection not found")
         default:
             return false
         }

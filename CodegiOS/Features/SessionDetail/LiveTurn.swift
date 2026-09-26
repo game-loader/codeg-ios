@@ -184,6 +184,10 @@ final class LiveTurn: Identifiable {
     /// True before any content has streamed — used to show a "waiting" shimmer.
     var isEmpty: Bool { segments.isEmpty && errorMessage == nil && livePlan.isEmpty }
 
+    /// Whether the turn streamed anything worth preserving (prose, reasoning,
+    /// tools, a plan) — unlike `isEmpty`, an inline error alone doesn't count.
+    var hasContent: Bool { !segments.isEmpty || !livePlan.isEmpty }
+
     /// Replace the live plan from a `plan_update` event (or snapshot `plan` block).
     func updatePlan(_ entries: [PlanEntry]) {
         livePlan = entries
@@ -207,6 +211,16 @@ final class LiveTurn: Identifiable {
         } else {
             segments.append(.thinking(LiveTextRun(delta)))
         }
+    }
+
+    /// Route a sub-agent's prose (a chunk carrying `parent_tool_use_id`) into its
+    /// parent tool card's live output instead of the main reply — the web shows
+    /// it inside the Agent card too. The tool's own result replaces it when the
+    /// call completes. Dropped when this client never saw that card or it has
+    /// already finished.
+    func appendSubagentText(_ delta: String, parentToolUseId: String) {
+        guard !delta.isEmpty, let call = toolIndex[parentToolUseId], !call.isFinished else { return }
+        call.rawOutput += delta
     }
 
     /// Flush every text/reasoning run's pending coalesce immediately. Called when
@@ -307,7 +321,7 @@ final class LiveTurn: Identifiable {
                     blocks.append(.thinking(run.fullText))
                 }
             case .tool(let call):
-                blocks.append(.toolUse(id: call.id, name: call.title, inputPreview: call.rawInput, meta: call.meta))
+                blocks.append(.toolUse(id: call.id, name: call.title, inputPreview: call.rawInput, meta: call.meta, status: call.status))
                 let output = call.rawOutput.isEmpty ? call.content : call.rawOutput
                 blocks.append(.toolResult(id: call.id, outputPreview: output, isError: call.isError))
             }

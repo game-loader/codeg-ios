@@ -626,6 +626,9 @@ struct AgentConfigSection: View {
         case .cursor:     CursorConfigSection(draft: $draft, client: client)
         case .kimiCode:   KimiConfigSection(model: model, agent: agent, client: client)
         case .pi:         PiConfigSection(model: model, agent: agent, client: client)
+        // No structured form on iOS yet; the host's native-config editor still
+        // covers them.
+        case .deepSeek, .qoder, .antigravity, .other: EmptyView()
         }
     }
 }

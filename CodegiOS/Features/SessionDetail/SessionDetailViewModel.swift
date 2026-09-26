@@ -191,6 +191,17 @@ final class SessionDetailViewModel {
     /// frame). Past `maxStreamReconnects`, recovery gives up and reconciles.
     private var streamReconnects = 0
     private static let maxStreamReconnects = 6
+    /// The last session-level problem reported this turn (an `error` event, a
+    /// failed `session/load`) — the reason to show if the connection then dies
+    /// with `status_changed` disconnected/error, which carries no text itself.
+    private var lastStreamError: String?
+    /// Latest revision seen per session-failure record. Adapters re-publish
+    /// records (a re-attach replays them too), so a revision at or below the
+    /// stored one is dropped — the same merge rule as the server and the web.
+    private var failureRevisions: [String: UInt64] = [:]
+    /// The retry message currently in `notice`, so progress can clear exactly
+    /// that notice without wiping an unrelated one the user hasn't read.
+    private var retryNotice: String?
 
     private init(client: CodegClient, mode: Mode) {
         self.client = client
@@ -642,7 +653,7 @@ final class SessionDetailViewModel {
         // fold it into `turns` before we reuse the `liveTurn` slot — otherwise this
         // send would drop that reply from view until the next reconcile.
         if let prior = liveTurn, !prior.isStreaming, !prior.isEmpty {
-            promoteUnreconciled(prior)
+            promoteUnreconciled(prior, keepingError: false)
         }
 
         // 1) Optimistic user turn (text first, then images) + clear the composer.
@@ -671,6 +682,8 @@ final class SessionDetailViewModel {
         liveTurnFromReattach = false
         sendState = .connecting
         notice = nil
+        retryNotice = nil
+        lastStreamError = nil
         // The user's own send always re-pins, even if they'd scrolled up.
         requestStickToBottom()
 
@@ -1117,6 +1130,7 @@ final class SessionDetailViewModel {
                     // begun persisting into `turns` so the reply isn't doubled.
                     liveTurnFromReattach = true
                     isTurnActive = true
+                    lastStreamError = nil
                     restorePending(from: snap)
                     sendState = .thinking
                     requestStickToBottom()
@@ -1173,8 +1187,12 @@ final class SessionDetailViewModel {
                                    uniquingKeysWith: { first, _ in first })
         for block in blocks {
             switch block {
-            case .text(let t): live.appendText(t)
-            case .thinking(let t): live.appendThinking(t)
+            case .text(let t, let parent):
+                // A sub-agent's prose goes to its tool card (listed before it),
+                // not the reply — same routing as the live event.
+                if let parent { live.appendSubagentText(t, parentToolUseId: parent) } else { live.appendText(t) }
+            case .thinking(let t, let parent):
+                if parent == nil { live.appendThinking(t) }
             case .toolCallRef(let toolId):
                 guard let st = toolsById[toolId] else { break }
                 live.upsertToolCall(
@@ -1199,7 +1217,8 @@ final class SessionDetailViewModel {
 
     private func restorePending(from snap: LiveSessionSnapshot) {
         if let p = snap.pendingPermission {
-            pendingPermission = PendingPermission(requestId: p.requestId, toolCall: p.toolCall, options: p.options)
+            pendingPermission = PendingPermission(requestId: p.requestId, toolCall: p.toolCall,
+                                                  options: p.options, queued: p.queued)
         }
         if let q = snap.pendingQuestion {
             pendingQuestion = PendingQuestion(questionId: q.questionId, questions: q.questions)
@@ -1234,22 +1253,33 @@ final class SessionDetailViewModel {
 
     private func handle(event: AcpEvent, live: LiveTurn) {
         switch event {
-        case .contentDelta(let text):
-            live.appendText(text)
-            if case .running = sendState {} else { sendState = .thinking }
-            requestScrollToBottom()
+        case .contentDelta(let text, let parent):
+            if let parent {
+                // A sub-agent's prose belongs to its tool card, not the reply.
+                live.appendSubagentText(text, parentToolUseId: parent)
+            } else {
+                clearRetryNotice()
+                live.appendText(text)
+                if case .running = sendState {} else { sendState = .thinking }
+                requestScrollToBottom()
+            }
 
-        case .thinking(let text):
+        case .thinking(let text, let parent):
+            // A sub-agent's reasoning isn't shown at all.
+            guard parent == nil else { break }
+            clearRetryNotice()
             live.appendThinking(text)
             if case .running = sendState {} else { sendState = .thinking }
             requestScrollToBottom()
 
         case .toolCall(let id, let title, let kind, let status, let content, let rawInput, let rawOutput, let meta):
+            clearRetryNotice()
             live.upsertToolCall(id: id, title: title, kind: kind, status: status, rawInput: rawInput, rawOutput: rawOutput, content: content, meta: meta)
             sendState = .running(tool: title.isEmpty ? "tool" : title)
             requestScrollToBottom()
 
         case .toolCallUpdate(let id, let title, let status, let content, let rawInput, let rawOutput, let append, let meta):
+            clearRetryNotice()
             live.updateToolCall(id: id, title: title, status: status, rawInput: rawInput, rawOutput: rawOutput, content: content, append: append, meta: meta)
             if let active = live.activeToolTitle {
                 sendState = .running(tool: active)
@@ -1262,9 +1292,14 @@ final class SessionDetailViewModel {
             switch status {
             case .connecting: if case .idle = sendState { sendState = .connecting }
             case .prompting: if case .running = sendState {} else { sendState = .thinking }
-            case .error:
-                failLive(live, message: "The agent connection errored.")
-            default:
+            case .error, .disconnected:
+                // The connection itself died: no `turn_complete` is coming. Report
+                // the problem that preceded it, if there was one.
+                guard isTurnActive else { break }
+                failLive(live, message: lastStreamError ?? (status == .error
+                    ? String(localized: "The agent connection errored.")
+                    : String(localized: "The agent disconnected.")))
+            case .connected:
                 break
             }
 
@@ -1276,19 +1311,51 @@ final class SessionDetailViewModel {
             break
 
         case .turnComplete(let stopReason):
+            // A turn that ended badly keeps the reason it was given, inline — e.g.
+            // the agent's own rejection of the prompt, which arrives as a code-less
+            // `error` before `turn_complete` "rejected".
+            if stopReason != "end_turn", stopReason != "cancelled",
+               live.errorMessage == nil, let reason = lastStreamError {
+                live.errorMessage = reason
+                if notice == reason { notice = nil }
+            }
             finalize(live: live, stopReason: stopReason)
 
-        case .error(let message, _):
-            failLive(live, message: message)
+        case .error(let message, let code):
+            handleStreamError(message: message, code: code, live: live)
+
+        case .sessionFailure(let record):
+            applySessionFailure(record, live: live)
+
+        case .turnRetrying(let message, let attempt, let maxRetries):
+            showRetryNotice(Self.retryText(message: message, attempt: attempt, maxRetries: maxRetries))
+
+        case .sessionNotice(let sessionNotice):
+            // Warnings and errors are worth a banner; info-level notices are
+            // chatter on a phone.
+            let title = sessionNotice.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if sessionNotice.severity != "info", !title.isEmpty { notice = title }
+
+        case .sessionLoadFailed(_, let code):
+            // The server follows this with `status_changed` error, which ends the
+            // turn with this reason.
+            let reason = code == "session_archived"
+                ? String(localized: "This session is archived in the agent. Unarchive it there, or start a new session.")
+                : String(localized: "The agent couldn't restore this session. Start a new session to continue.")
+            if isTurnActive { lastStreamError = reason } else { notice = reason }
 
         case .conversationLinked(let linkedID, _):
             adoptLinkedConversation(linkedID)
 
-        case .permissionRequest(let requestId, let toolCall, let options):
+        case .permissionRequest(let requestId, let toolCall, let options, let queued):
             // The agent paused for approval (incl. ExitPlanMode). Surface the card
             // above the compose bar; the turn stays in-flight until it's resolved.
-            pendingPermission = PendingPermission(requestId: requestId, toolCall: toolCall, options: options)
+            pendingPermission = PendingPermission(requestId: requestId, toolCall: toolCall,
+                                                  options: options, queued: queued)
             requestScrollToBottom()
+
+        case .permissionQueueDepth(let depth):
+            pendingPermission?.queued = depth
 
         case .permissionResolved(let requestId):
             // Resolved here or by another client — clear the matching card only, so
@@ -1318,6 +1385,83 @@ final class SessionDetailViewModel {
         case .sessionStarted, .conversationStatusChanged, .userPromptSent, .unknown:
             break
         }
+    }
+
+    /// An `error` event is a notice, not the end of the turn (web parity): only
+    /// `turn_complete` ends a turn, and a connection that died also sends
+    /// `status_changed`. Routed on the stable `code` like the web's
+    /// `routeAcpError`.
+    private func handleStreamError(message: String, code: String?, live: LiveTurn) {
+        let code = code ?? ""
+        switch code {
+        case "compaction_failed":
+            // Already shown on the transcript's compaction card.
+            break
+        case "set_mode_failed", "set_config_option_failed", "grok_model_switch_incompatible_agent",
+             "goal_control_failed", "image_dropped", "session_load_fallback":
+            // The answer to something the user just did (or a note that the
+            // agent started over instead of resuming): tell them, nothing more.
+            notice = message
+        default:
+            if code.hasPrefix("turn_failed_") {
+                // codeg's verdict on a turn that ended badly; `turn_complete`
+                // follows. A typed failure the adapter already reported for this
+                // turn is the better explanation, so it wins.
+                if live.errorMessage == nil { live.errorMessage = message }
+            } else {
+                // A session-level problem. If the connection dies next, this is
+                // the reason reported for the turn.
+                lastStreamError = message
+                notice = message
+            }
+        }
+    }
+
+    /// Apply one typed session-failure upsert (Claude Code / Codex): a retry
+    /// incident is progress (a transient banner), a `warning` in the `unknown`
+    /// category is an advisory, and an `error` explains the failed turn — the
+    /// `turn_complete` that follows it carries no `error` event of its own.
+    private func applySessionFailure(_ record: SessionFailureRecord, live: LiveTurn) {
+        guard !record.id.isEmpty, record.revision >= 1 else { return }
+        if let seen = failureRevisions[record.id], record.revision <= seen { return }
+        failureRevisions[record.id] = record.revision
+        guard !record.resolved else { return }
+        if record.isRetryIncident {
+            showRetryNotice(record.displayText)
+        } else if record.severity == "warning" {
+            notice = record.displayText
+        } else {
+            clearRetryNotice()
+            if isTurnActive {
+                if live.errorMessage == nil { live.errorMessage = record.fullText }
+            } else {
+                notice = record.displayText
+            }
+        }
+    }
+
+    /// Show a transient "retrying" notice. It is cleared again as soon as the
+    /// turn makes progress, or ends.
+    private func showRetryNotice(_ text: String) {
+        retryNotice = text
+        notice = text
+    }
+
+    private func clearRetryNotice() {
+        guard let shown = retryNotice else { return }
+        retryNotice = nil
+        if notice == shown { notice = nil }
+    }
+
+    /// The retry banner's text. pi reports attempt counters but no error text;
+    /// codex reports the error text but no counters.
+    private static func retryText(message: String, attempt: Int?, maxRetries: Int?) -> String {
+        let reason = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let attempt, let maxRetries, maxRetries > 0 {
+            let head = String(localized: "Retrying (\(attempt)/\(maxRetries))…")
+            return reason.isEmpty ? head : "\(head) \(reason)"
+        }
+        return reason.isEmpty ? String(localized: "Retrying…") : String(localized: "Retrying: \(reason)")
     }
 
     /// A new task's first prompt creates the server-side conversation; adopt
@@ -1365,6 +1509,8 @@ final class SessionDetailViewModel {
         live.isStreaming = false
         live.stopReason = stopReason
         sendState = .idle
+        clearRetryNotice()
+        lastStreamError = nil
         completedTurnTick &+= 1
         closeStream()
         requestScrollToBottom()
@@ -1417,6 +1563,8 @@ final class SessionDetailViewModel {
     private func failLive(_ live: LiveTurn, message: String?) {
         isTurnActive = false
         clearInteractivePrompts()
+        clearRetryNotice()
+        lastStreamError = nil
         live.flushAllText()
         live.isStreaming = false
         if let message { live.errorMessage = message }
@@ -1609,8 +1757,10 @@ final class SessionDetailViewModel {
         guard let id = conversationID else { return }
         // Whether the finished live turn has content worth preserving. If it was
         // empty (e.g. a no-op turn), there's nothing to protect — adopt whatever
-        // the server returns on the first successful fetch.
-        let mustPreserveReply = !live.isEmpty
+        // the server returns on the first successful fetch. An inline error alone
+        // isn't a reply to wait for: a failed turn often persists no reply at all,
+        // and the error is carried over separately (`errorOnlyTurn`).
+        let mustPreserveReply = live.hasContent
         // Pre-turn baseline. A fetched transcript is only "ours" once it has grown
         // past this — otherwise a stale read that still ends with the *previous*
         // turn's assistant reply would satisfy `transcriptHasReply` and we'd adopt
@@ -1641,7 +1791,10 @@ final class SessionDetailViewModel {
                 if advanced, !mustPreserveReply || Self.transcriptHasReply(detail.turns) {
                     turns = detail.turns
                     pendingUserTurns.removeAll()
-                    liveTurn = nil
+                    liveTurn = Self.errorOnlyTurn(from: live)
+                    // An error-only turn carries no reply, so it must not hide the
+                    // persisted one just adopted (the reattach suppression).
+                    liveTurnFromReattach = false
                     requestScrollToBottom()
                     return
                 }
@@ -1661,7 +1814,7 @@ final class SessionDetailViewModel {
         // into the authoritative `turns` so it survives a subsequent send instead
         // of living only in the single `liveTurn` slot; a later reconcile or full
         // load replaces it with the server's copy.
-        promoteUnreconciled(live)
+        promoteUnreconciled(live, keepingError: true)
     }
 
     /// Fold a finalized-but-unreconciled live reply (plus the optimistic user
@@ -1669,7 +1822,10 @@ final class SessionDetailViewModel {
     /// dropped from view when the `liveTurn` slot is reused by the next send. The
     /// synthesized turns are transient: the next successful `refreshAfterTurn` /
     /// `load` overwrites `turns` wholesale with the server's authoritative copy.
-    private func promoteUnreconciled(_ live: LiveTurn) {
+    ///
+    /// `keepingError` leaves the turn's inline error on screen (see
+    /// `errorOnlyTurn`); the next send passes false, since it takes the slot.
+    private func promoteUnreconciled(_ live: LiveTurn, keepingError: Bool) {
         // Only act while this is still the current live turn — if a newer turn has
         // taken over, it already owns (and preserved) the prior state.
         guard liveTurn === live else { return }
@@ -1679,14 +1835,28 @@ final class SessionDetailViewModel {
         // finalized turn can be non-empty *solely* because of an inline error /
         // "Cancelled." message (which `snapshotAsMessageTurn` can't represent as a
         // persisted block, since ContentBlock has no error case) — appending its
-        // zero-block snapshot would render as "No content". Such a transient error
-        // placeholder is simply dropped on the next send; the user turn is kept.
+        // zero-block snapshot would render as "No content". The error rides on in
+        // an error-only live turn instead, when `keepingError`.
         let snapshot = live.snapshotAsMessageTurn()
         if !snapshot.blocks.isEmpty {
             turns.append(snapshot)
         }
-        liveTurn = nil
+        liveTurn = keepingError ? Self.errorOnlyTurn(from: live) : nil
+        liveTurnFromReattach = false
         requestScrollToBottom()
+    }
+
+    /// The transcript has no slot for why a turn failed (its reply is partial or
+    /// absent), so once a failed turn reconciles, its error stays on screen as a
+    /// finalized, content-free live turn — rendered after the transcript until
+    /// the next send takes the slot. nil when the turn had no error.
+    private static func errorOnlyTurn(from live: LiveTurn) -> LiveTurn? {
+        guard let message = live.errorMessage else { return nil }
+        let holder = LiveTurn()
+        holder.errorMessage = message
+        holder.stopReason = live.stopReason
+        holder.isStreaming = false
+        return holder
     }
 
     /// True when the latest persisted turn is an assistant reply that actually

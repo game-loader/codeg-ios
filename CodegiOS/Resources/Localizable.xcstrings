@@ -8476,7 +8476,6 @@
       }
     },
     "The agent connection errored." : {
-      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -9539,6 +9538,146 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "把你的编程智能体装进口袋。"
+          }
+        }
+      }
+    },
+    "%lld more waiting" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还有 %lld 个请求等待中"
+          }
+        }
+      }
+    },
+    "Access issue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "访问受限"
+          }
+        }
+      }
+    },
+    "Connection issue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接异常"
+          }
+        }
+      }
+    },
+    "Limit reached" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已达限制"
+          }
+        }
+      }
+    },
+    "On" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开启"
+          }
+        }
+      }
+    },
+    "Request rejected" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请求被拒绝"
+          }
+        }
+      }
+    },
+    "Retrying (%lld/%lld)…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在重试（%1$lld/%2$lld）…"
+          }
+        }
+      }
+    },
+    "Retrying: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在重试：%@"
+          }
+        }
+      }
+    },
+    "Retrying…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在重试…"
+          }
+        }
+      }
+    },
+    "Service issue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务异常"
+          }
+        }
+      }
+    },
+    "Session issue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话异常"
+          }
+        }
+      }
+    },
+    "The agent couldn't restore this session. Start a new session to continue." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "智能体无法恢复此会话。请新建会话继续。"
+          }
+        }
+      }
+    },
+    "The agent disconnected." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "智能体已断开连接。"
+          }
+        }
+      }
+    },
+    "This session is archived in the agent. Unarchive it there, or start a new session." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此会话已在智能体侧归档。请在那里取消归档，或新建会话。"
           }
         }
       }

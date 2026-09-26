@@ -216,7 +216,7 @@ struct SessionListView: View {
                  tint: Theme.accent, conversations: pinned, showFolder: true)
         }
         ForEach(groups.filter { !$0.conversations.isEmpty }) { group in
-            card(.folder(group.folder.id), title: group.folder.name,
+            card(.folder(group.folder.id), title: group.folder.displayName,
                  tint: Color(hexString: group.folder.color) ?? Theme.accent,
                  conversations: group.conversations, showFolder: false)
         }
@@ -298,7 +298,7 @@ struct SessionListView: View {
         case .folder(let fid):
             let group = viewModel.folderGroups(searchText: "").first { $0.folder.id == fid }
             let tint = group.flatMap { Color(hexString: $0.folder.color) } ?? Theme.accent
-            return (group?.folder.name ?? "Folder", tint, group?.conversations ?? [], false)
+            return (group?.folder.displayName ?? "Folder", tint, group?.conversations ?? [], false)
         case .other:
             return ("Other", Theme.textSecondary, viewModel.ungrouped(searchText: ""), true)
         }

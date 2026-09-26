@@ -184,7 +184,7 @@ private struct ProjectRow: View {
                     FolderBadge(color: folderColor, size: FolderRowMetrics.tileSize)
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(folder.name)
+                        Text(folder.displayName)
                             .font(.headline)
                             .foregroundStyle(Theme.textPrimary)
                             .lineLimit(1)

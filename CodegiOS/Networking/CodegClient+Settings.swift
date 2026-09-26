@@ -402,9 +402,18 @@ extension CodegClient {
     }
 
     /// Wrapped `{settings:{accounts:[...]}}` raw send (full replace, snake_case).
+    /// Each account is laid over its stored raw copy, so per-account fields this
+    /// client doesn't model (e.g. the forge `provider`) survive the replace.
     func updateGithubAccounts(_ accounts: [GitHubAccount]) async throws {
-        let settings: [String: Any] = ["accounts": accounts.map(\.snakeDict)]
-        let body = try JSONSerialization.data(withJSONObject: ["settings": settings])
+        let stored = try await rawSettingsObject("get_github_accounts")["accounts"] as? [[String: Any]] ?? []
+        var storedById: [String: [String: Any]] = [:]
+        for account in stored {
+            if let id = account["id"] as? String { storedById[id] = account }
+        }
+        let merged = accounts.map { account in
+            (storedById[account.id] ?? [:]).merging(account.snakeDict) { _, edited in edited }
+        }
+        let body = try JSONSerialization.data(withJSONObject: ["settings": ["accounts": merged]])
         _ = try await send("update_github_accounts", rawBody: body)
     }
 
@@ -426,9 +435,11 @@ extension CodegClient {
         try await postJSON("get_system_proxy_settings", EmptyBody())
     }
 
+    /// Only `enabled`/`proxy_url` are edited here; the rest (e.g. `no_proxy`) is
+    /// carried over from the stored copy, since the server replaces the object.
     func updateSystemProxySettings(enabled: Bool, proxyUrl: String?) async throws {
-        let settings: [String: Any] = ["enabled": enabled, "proxy_url": proxyUrl ?? NSNull()]
-        let body = try JSONSerialization.data(withJSONObject: ["settings": settings])
+        let edited: [String: Any] = ["enabled": enabled, "proxy_url": proxyUrl ?? NSNull()]
+        let body = try await mergedSettingsBody("get_system_proxy_settings", edited)
         _ = try await send("update_system_proxy_settings", rawBody: body)
     }
 
@@ -446,9 +457,11 @@ extension CodegClient {
         try await postJSON("get_system_terminal_settings", EmptyBody())
     }
 
+    /// Only `default_shell` is edited here; the rest (e.g.
+    /// `colorize_command_output`) is carried over from the stored copy.
     func updateSystemTerminalSettings(defaultShell: String?) async throws {
-        let settings: [String: Any] = ["default_shell": defaultShell ?? NSNull()]
-        let body = try JSONSerialization.data(withJSONObject: ["settings": settings])
+        let edited: [String: Any] = ["default_shell": defaultShell ?? NSNull()]
+        let body = try await mergedSettingsBody("get_system_terminal_settings", edited)
         _ = try await send("update_system_terminal_settings", rawBody: body)
     }
 
@@ -483,5 +496,24 @@ private extension CodegClient {
             return s
         }
         return nil
+    }
+
+    /// A settings object as stored (raw JSON, no key strategy). Throws on a
+    /// non-object response rather than falling open to [:] — a save merged onto
+    /// an empty base would silently reset every field this client doesn't edit.
+    func rawSettingsObject(_ getCommand: String) async throws -> [String: Any] {
+        let data = try await send(getCommand, body: EmptyBody())
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            throw APIError.decoding("\(getCommand): expected a JSON object")
+        }
+        return object
+    }
+
+    /// `{settings: stored ⊕ edited}` for the full-replace `update_*_settings`
+    /// endpoints: the server swaps the whole object, so fields added after this
+    /// client was written must be read back and resent unchanged.
+    func mergedSettingsBody(_ getCommand: String, _ edited: [String: Any]) async throws -> Data {
+        let merged = try await rawSettingsObject(getCommand).merging(edited) { _, new in new }
+        return try JSONSerialization.data(withJSONObject: ["settings": merged])
     }
 }

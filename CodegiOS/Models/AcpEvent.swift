@@ -44,8 +44,11 @@ enum UserMessageBlock: Hashable, Sendable, Decodable {
 /// Decode-only. Unknown event types decode to `.unknown` so a new server event
 /// never breaks the stream.
 enum AcpEvent: Hashable, Sendable, Decodable {
-    case contentDelta(text: String)
-    case thinking(text: String)
+    /// `parentToolUseId` is set on a sub-agent's chunk (Claude Code with the
+    /// `subagent-transcript` capability): it belongs to that tool call, not to
+    /// the main reply. nil = main-thread content.
+    case contentDelta(text: String, parentToolUseId: String?)
+    case thinking(text: String, parentToolUseId: String?)
     case toolCall(id: String, title: String, kind: String, status: String, content: String?, rawInput: String?, rawOutput: String?, meta: AnyJSON?)
     case toolCallUpdate(id: String, title: String?, status: String?, content: String?, rawInput: String?, rawOutput: String?, append: Bool, meta: AnyJSON?)
     case turnComplete(stopReason: String)
@@ -56,11 +59,28 @@ enum AcpEvent: Hashable, Sendable, Decodable {
     case usageUpdate(used: UInt64, size: UInt64)
     case userMessage(messageId: String, blocks: [UserMessageBlock])
     case userPromptSent(textPreview: String)
+    /// Not necessarily the end of the turn: most errors (a dropped image, a
+    /// refused mode switch, a failed turn about to be followed by
+    /// `turn_complete`) leave the connection alive. Only `turn_complete` ends a
+    /// turn; a dead connection also reports `status_changed` disconnected/error.
     case error(message: String, code: String?)
+    /// A typed session failure upsert (Claude Code / Codex). A failed turn on
+    /// those agents arrives as a severity-`error` record followed by a plain
+    /// `turn_complete`, with no `error` event.
+    case sessionFailure(SessionFailureRecord)
+    /// A transient, auto-retried turn error (codex, pi) — the turn is still alive.
+    case turnRetrying(message: String, attempt: Int?, maxRetries: Int?)
+    /// An adapter notice, shown once. Not a failure.
+    case sessionNotice(SessionNotice)
+    /// `session/load` failed and codeg did not fall back to a new session.
+    case sessionLoadFailed(message: String, code: String)
     /// Agent asks the user to approve a tool call before it runs. Also carries
     /// ExitPlanMode — the proposed plan rides inside `toolCall`. Resolve via
-    /// `acp_respond_permission` with the chosen `option_id`.
-    case permissionRequest(requestId: String, toolCall: AnyJSON, options: [PermissionOption])
+    /// `acp_respond_permission` with the chosen `option_id`. `queued` counts the
+    /// further requests waiting behind this one (the server shows one at a time).
+    case permissionRequest(requestId: String, toolCall: AnyJSON, options: [PermissionOption], queued: Int)
+    /// The number of requests queued behind the visible permission card changed.
+    case permissionQueueDepth(depth: Int)
     /// A pending permission was resolved (by this or another client) — clear the card.
     case permissionResolved(requestId: String)
     /// Agent asks one or more multiple-choice questions (`ask_user_question`).
@@ -87,6 +107,7 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         case used, size, messageId, blocks, message, code, textPreview
         case requestId, toolCall, options, questionId, questions, entries
         case approvalId, planMarkdown
+        case parentToolUseId, record, notice, attempt, maxRetries, depth, queued
     }
 
     init(from decoder: Decoder) throws {
@@ -94,9 +115,15 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         let type = try c.decode(String.self, forKey: .type)
         switch type {
         case "content_delta":
-            self = .contentDelta(text: try c.decodeIfPresent(String.self, forKey: .text) ?? "")
+            self = .contentDelta(
+                text: try c.decodeIfPresent(String.self, forKey: .text) ?? "",
+                parentToolUseId: try c.decodeIfPresent(String.self, forKey: .parentToolUseId)
+            )
         case "thinking":
-            self = .thinking(text: try c.decodeIfPresent(String.self, forKey: .text) ?? "")
+            self = .thinking(
+                text: try c.decodeIfPresent(String.self, forKey: .text) ?? "",
+                parentToolUseId: try c.decodeIfPresent(String.self, forKey: .parentToolUseId)
+            )
         case "tool_call":
             self = .toolCall(
                 id: try c.decodeIfPresent(String.self, forKey: .toolCallId) ?? "",
@@ -157,12 +184,41 @@ enum AcpEvent: Hashable, Sendable, Decodable {
                 message: try c.decodeIfPresent(String.self, forKey: .message) ?? "Unknown error",
                 code: try c.decodeIfPresent(String.self, forKey: .code)
             )
+        case "session_failure":
+            // A record that doesn't parse is dropped like any unknown event
+            // rather than failing the stream.
+            if let record = try? c.decode(SessionFailureRecord.self, forKey: .record) {
+                self = .sessionFailure(record)
+            } else {
+                self = .unknown(type: type)
+            }
+        case "turn_retrying":
+            self = .turnRetrying(
+                // Empty for pi, which only reports the retry counters.
+                message: try c.decodeIfPresent(String.self, forKey: .message) ?? "",
+                attempt: try c.decodeIfPresent(Int.self, forKey: .attempt),
+                maxRetries: try c.decodeIfPresent(Int.self, forKey: .maxRetries)
+            )
+        case "session_notice":
+            if let notice = try? c.decode(SessionNotice.self, forKey: .notice) {
+                self = .sessionNotice(notice)
+            } else {
+                self = .unknown(type: type)
+            }
+        case "session_load_failed":
+            self = .sessionLoadFailed(
+                message: try c.decodeIfPresent(String.self, forKey: .message) ?? "",
+                code: try c.decodeIfPresent(String.self, forKey: .code) ?? ""
+            )
         case "permission_request":
             self = .permissionRequest(
                 requestId: try c.decodeIfPresent(String.self, forKey: .requestId) ?? "",
                 toolCall: try c.decodeIfPresent(AnyJSON.self, forKey: .toolCall) ?? .null,
-                options: try c.decodeIfPresent([PermissionOption].self, forKey: .options) ?? []
+                options: try c.decodeIfPresent([PermissionOption].self, forKey: .options) ?? [],
+                queued: try c.decodeIfPresent(Int.self, forKey: .queued) ?? 0
             )
+        case "permission_queue_depth":
+            self = .permissionQueueDepth(depth: try c.decodeIfPresent(Int.self, forKey: .depth) ?? 0)
         case "permission_resolved":
             self = .permissionResolved(requestId: try c.decodeIfPresent(String.self, forKey: .requestId) ?? "")
         case "question_request":
@@ -187,6 +243,87 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         default:
             self = .unknown(type: type)
         }
+    }
+}
+
+/// One typed session failure (Rust `SessionFailureRecord`, JetBrains AIR
+/// `sessionFailure`). The wire carries upserts only — a record is revised in
+/// place through `id` + `revision` — so consumers drop a revision they have
+/// already seen. `category` / `severity` stay plain strings so a future value
+/// degrades to the fallback text instead of failing the decode.
+struct SessionFailureRecord: Hashable, Sendable, Decodable {
+    let id: String
+    let revision: UInt64
+    /// `connection|access|limit|request|service|unknown` today.
+    let category: String
+    /// `warning` (transient, auto-recovering) or `error` (terminal).
+    let severity: String
+    /// Adapter-authored text. May be empty.
+    let title: String
+    let details: String?
+    /// Settled. Adapters never publish a resolution (clients infer it), so a live
+    /// record carries `false`; a `true` one is kept only as a revision watermark.
+    let resolved: Bool
+
+    private enum CodingKeys: String, CodingKey { case id, revision, category, severity, title, details, resolved }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+        revision = try c.decodeIfPresent(UInt64.self, forKey: .revision) ?? 0
+        category = try c.decodeIfPresent(String.self, forKey: .category) ?? "unknown"
+        severity = try c.decodeIfPresent(String.self, forKey: .severity) ?? "error"
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        details = try c.decodeIfPresent(String.self, forKey: .details)
+        resolved = try c.decodeIfPresent(Bool.self, forKey: .resolved) ?? false
+    }
+
+    /// A transient problem the agent is retrying on its own — progress, not news
+    /// (web `isRetryIncident`). A `warning` in the `unknown` category is instead
+    /// an advisory (a config notice, a model-fallback note).
+    var isRetryIncident: Bool { severity == "warning" && category != "unknown" }
+
+    /// What to show: the adapter's own title, else its details, else a label for
+    /// the category (web `sessionFailure.category.*`).
+    var displayText: String {
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !t.isEmpty { return t }
+        if let d = details?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty { return d }
+        switch category {
+        case "connection": return String(localized: "Connection issue")
+        case "access": return String(localized: "Access issue")
+        case "limit": return String(localized: "Limit reached")
+        case "request": return String(localized: "Request rejected")
+        case "service": return String(localized: "Service issue")
+        default: return String(localized: "Session issue")
+        }
+    }
+
+    /// `displayText`, plus the details on a second line when the title didn't
+    /// already consist of them — for an inline turn error, which has room.
+    var fullText: String {
+        let base = displayText
+        guard let d = details?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty, d != base else {
+            return base
+        }
+        return base + "\n" + d
+    }
+}
+
+/// One adapter notice (Rust `SessionNotice`): plain text shown once, not a
+/// failure. `severity` is `info` | `warning` | `error` today.
+struct SessionNotice: Hashable, Sendable, Decodable {
+    let severity: String
+    let title: String
+    let detail: String?
+
+    private enum CodingKeys: String, CodingKey { case severity, title, description }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        severity = try c.decodeIfPresent(String.self, forKey: .severity) ?? "info"
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        detail = try c.decodeIfPresent(String.self, forKey: .description)
     }
 }
 
@@ -263,20 +400,25 @@ struct LiveMessageSnapshot: Sendable, Decodable {
 }
 
 /// One ordered block of the in-flight message (Rust `LiveContentBlock`,
-/// `kind`-tagged). `toolCallRef` points into `activeToolCalls` by id.
+/// `kind`-tagged). `toolCallRef` points into `activeToolCalls` by id. A text /
+/// thinking block with a `parentToolUseId` is a sub-agent's, not the reply's.
 enum LiveContentBlockSnapshot: Sendable, Decodable {
-    case text(String)
-    case thinking(String)
+    case text(String, parentToolUseId: String?)
+    case thinking(String, parentToolUseId: String?)
     case toolCallRef(toolCallId: String)
     case plan(entries: AnyJSON)
     case unknown
 
-    private enum CodingKeys: String, CodingKey { case kind, text, toolCallId, entries }
+    private enum CodingKeys: String, CodingKey { case kind, text, toolCallId, entries, parentToolUseId }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         switch try c.decodeIfPresent(String.self, forKey: .kind) ?? "" {
-        case "text": self = .text(try c.decodeIfPresent(String.self, forKey: .text) ?? "")
-        case "thinking": self = .thinking(try c.decodeIfPresent(String.self, forKey: .text) ?? "")
+        case "text":
+            self = .text(try c.decodeIfPresent(String.self, forKey: .text) ?? "",
+                         parentToolUseId: try c.decodeIfPresent(String.self, forKey: .parentToolUseId))
+        case "thinking":
+            self = .thinking(try c.decodeIfPresent(String.self, forKey: .text) ?? "",
+                             parentToolUseId: try c.decodeIfPresent(String.self, forKey: .parentToolUseId))
         case "tool_call_ref": self = .toolCallRef(toolCallId: try c.decodeIfPresent(String.self, forKey: .toolCallId) ?? "")
         case "plan": self = .plan(entries: try c.decodeIfPresent(AnyJSON.self, forKey: .entries) ?? .null)
         default: self = .unknown
@@ -335,13 +477,16 @@ struct PendingPermissionSnapshot: Sendable, Decodable {
     let requestId: String
     let toolCall: AnyJSON
     let options: [PermissionOption]
+    /// Requests queued behind this card, kept live server-side.
+    let queued: Int
 
-    private enum CodingKeys: String, CodingKey { case requestId, toolCall, options }
+    private enum CodingKeys: String, CodingKey { case requestId, toolCall, options, queued }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         requestId = try c.decodeIfPresent(String.self, forKey: .requestId) ?? ""
         toolCall = try c.decodeIfPresent(AnyJSON.self, forKey: .toolCall) ?? .null
         options = try c.decodeIfPresent([PermissionOption].self, forKey: .options) ?? []
+        queued = try c.decodeIfPresent(Int.self, forKey: .queued) ?? 0
     }
 }
 

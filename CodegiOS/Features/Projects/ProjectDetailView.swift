@@ -18,7 +18,7 @@ struct ProjectDetailView: View {
             CodegBackground()
             content
         }
-        .navigationTitle(folder?.name ?? "Folder")
+        .navigationTitle(folder?.displayName ?? "Folder")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if folder != nil {
@@ -193,7 +193,7 @@ private struct FolderHeader: View {
                 FolderBadge(color: folderColor, size: 52)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(folder.name)
+                    Text(folder.displayName)
                         .font(.title2.weight(.semibold))
                         .foregroundStyle(Theme.textPrimary)
                         .lineLimit(1)

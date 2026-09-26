@@ -76,7 +76,7 @@ final class ActivityModel {
     /// `folderId -> name` lookup for row labels — over the FULL set so a worktree
     /// or chat folder id still resolves.
     var folderNames: [Int: String] {
-        Dictionary(folders.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        Dictionary(folders.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
     }
 
     /// Running-session count per folder, for the Projects tab's badges. A root

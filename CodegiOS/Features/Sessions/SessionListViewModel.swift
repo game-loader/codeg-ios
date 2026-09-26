@@ -98,7 +98,7 @@ final class SessionListViewModel {
     /// `folderId -> name` lookup for the dim folder label shown on pinned rows
     /// (which span folders, so the row notes which folder it belongs to).
     var folderNames: [Int: String] {
-        Dictionary(folders.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        Dictionary(folders.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
     }
 
     /// Pinned conversations across all folders, most-recently-pinned first,

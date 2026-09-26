@@ -72,6 +72,13 @@ struct PermissionRequestCard: View {
                     .font(.caption)
                     .foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+                // The server shows one request at a time; without this the user
+                // can't tell "waiting on me once" from "…three more times".
+                if pending.queued > 0 {
+                    Text("\(pending.queued) more waiting")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Theme.warning)
+                }
             }
             Spacer(minLength: 8)
             if !parsed.isPlan, !parsed.kind.isEmpty {

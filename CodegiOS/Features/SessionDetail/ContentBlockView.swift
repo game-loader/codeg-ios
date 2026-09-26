@@ -24,7 +24,7 @@ struct ContentBlockView: View {
             } else if let revisedPrompt {
                 MarkdownContent(raw: revisedPrompt)
             }
-        case .toolUse(let id, let name, let inputPreview, let meta):
+        case .toolUse(let id, let name, let inputPreview, let meta, _):
             ToolCallCard(vm: ToolCallVM(
                 id: id ?? "tool", rawName: name, kind: "", state: .done,
                 input: inputPreview, output: nil, content: nil, isError: false, meta: meta))

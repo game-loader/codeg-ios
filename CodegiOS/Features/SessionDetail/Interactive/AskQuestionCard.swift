@@ -254,13 +254,23 @@ struct AskQuestionCard: View {
             .disabled(submitting)
 
             if selected {
-                TextField("Type your answer…", text: otherBinding(question.id), axis: .vertical)
-                    .font(.subheadline)
-                    .lineLimit(1...3)
-                    .padding(8)
-                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
-                    .hairlineBorder(Theme.Radius.sm)
-                    .disabled(submitting)
+                Group {
+                    if question.isSecret {
+                        // A secret answer (an API key, a password) is masked and
+                        // never offered to autocorrect.
+                        SecureField("Type your answer…", text: otherBinding(question.id))
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled(true)
+                    } else {
+                        TextField("Type your answer…", text: otherBinding(question.id), axis: .vertical)
+                            .lineLimit(1...3)
+                    }
+                }
+                .font(.subheadline)
+                .padding(8)
+                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
+                .hairlineBorder(Theme.Radius.sm)
+                .disabled(submitting)
             }
         }
     }
