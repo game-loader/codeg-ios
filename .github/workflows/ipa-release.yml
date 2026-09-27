@@ -227,10 +227,10 @@ jobs:
           fi
           mkdir -p build/package/Payload build/export
           ditto --norsrc --noextattr --noacl "$APP" build/package/Payload/Codeg.app
-          # An ad-hoc signature carrying an entitlements plist: installers re-sign
-          # the app anyway, but some (Sideloadly on macOS) parse the existing
-          # entitlements first and fail with "Invalid file" when there are none.
-          # get-task-allow is granted by every development profile.
+          # Ad-hoc sign with an entitlements plist so the IPA looks like an
+          # ordinary development build to tools that inspect the existing
+          # signature. Installers re-sign it anyway; get-task-allow is granted
+          # by every development profile.
           /usr/libexec/PlistBuddy -c 'Add :get-task-allow bool true' build/adhoc.entitlements
           codesign --force --sign - --timestamp=none \
             --entitlements build/adhoc.entitlements build/package/Payload/Codeg.app
