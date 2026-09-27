@@ -93,7 +93,7 @@ final class ModelProvidersSettingsModel {
     /// (`model_provider_id`), so the fix is to unlink it in those agents' settings —
     /// not to stop running sessions. Mirrors the web's "unlink before deleting".
     private static func deleteErrorMessage(_ error: Error) -> String {
-        if case let APIError.server(_, _, message) = error,
+        if case let APIError.server(_, _, message, _) = error,
            let range = message.range(of: "PROVIDER_IN_USE:") {
             let names = message[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
             if names.isEmpty {

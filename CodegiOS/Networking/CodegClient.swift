@@ -111,11 +111,13 @@ struct CodegClient: Sendable {
     /// the implicit creation that happens when prompting with a nil `conversationId`,
     /// which announces the link only on the prompting client's own stream. Mirrors
     /// the web client's new-tab flow. Response is a bare JSON integer.
-    func createConversation(folderId: Int, agentType: AgentType, title: String?) async throws -> Int {
+    func createConversation(folderId: Int, agentType: AgentType, title: String?,
+                            academicPaperId: String? = nil) async throws -> Int {
         try await postJSON("create_conversation", CreateConversationBody(
             folderId: folderId,
             agentType: agentType,
-            title: title
+            title: title,
+            academicPaperId: academicPaperId
         ))
     }
 
@@ -404,7 +406,8 @@ struct CodegClient: Sendable {
             throw APIError.server(
                 status: http.statusCode,
                 code: parsed?.code,
-                message: parsed?.message ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
+                message: parsed?.message ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode),
+                detail: parsed?.detail
             )
         }
         return data

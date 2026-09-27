@@ -61,7 +61,8 @@ final class ComposeInsertModel {
     /// replace-prefix known set and the slash-command filter.
     private var builtInIDs: Set<String>?
 
-    private let client: CodegClient
+    /// Also used by the compose bar's machine picker.
+    let client: CodegClient
 
     init(client: CodegClient) {
         self.client = client

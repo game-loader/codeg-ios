@@ -1,4 +1,4 @@
-import Foundation
+import SwiftUI
 
 /// The five top-level tabs of the compact (iPhone) shell: four content tabs
 /// plus the system search tab (rendered by iOS 26 as the separated glass
@@ -19,6 +19,43 @@ enum SidebarSection: String, Hashable {
     case chats
     case projects
     case activity
+    case machines
+    case academic
+}
+
+/// Workspace-wide tools: rows at the top of the Folders tab on iPhone (the tab
+/// bar is full), sidebar rows on iPad.
+enum WorkspaceTool: String, Hashable, CaseIterable {
+    case machines
+    case academic
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .machines: "Machines"
+        case .academic: "Academic"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .machines: "server.rack"
+        case .academic: "books.vertical"
+        }
+    }
+
+    var route: Route {
+        switch self {
+        case .machines: .machines
+        case .academic: .academic
+        }
+    }
+
+    var sidebarSection: SidebarSection {
+        switch self {
+        case .machines: .machines
+        case .academic: .academic
+        }
+    }
 }
 
 /// A pushable destination. Every entry point (list rows, search results,
@@ -27,6 +64,11 @@ enum SidebarSection: String, Hashable {
 enum Route: Hashable {
     case conversation(Int)
     case project(Int)
+    case machines
+    case machine(Machine)
+    case academic
+    /// An Academic paper, by id.
+    case paper(String)
     /// The "start a new task" screen: a blank session detail. The agent, folder,
     /// and config are chosen in-page (from the nav-bar agent button), and the
     /// first send connects + prompts before a server conversation id exists
@@ -41,11 +83,30 @@ enum Route: Hashable {
 struct NewSessionRequest: Hashable, Identifiable {
     let id: UUID
     var preselectedFolderID: Int?
+    /// A conversation about an Academic paper.
+    var academic: AcademicDraft?
 
-    init(id: UUID = UUID(), preselectedFolderID: Int? = nil) {
+    init(id: UUID = UUID(), preselectedFolderID: Int? = nil, academic: AcademicDraft? = nil) {
         self.id = id
         self.preselectedFolderID = preselectedFolderID
+        self.academic = academic
     }
+}
+
+/// A new conversation bound to a paper, as `academic_open_target` described
+/// it: the research agent, in the paper's repository folder (the request's
+/// preselected folder) or, with `chatMode`, in a scratch directory.
+struct AcademicDraft: Hashable {
+    let paperID: String
+    let paperTitle: String
+    let agent: AgentType
+    let chatMode: Bool
+}
+
+/// The paper a conversation is about, for the context bar.
+struct BoundPaper: Hashable, Identifiable {
+    let id: String
+    let title: String
 }
 
 extension Route {

@@ -31,6 +31,20 @@ the text as the git tag message and the GitHub Release notes.
 - Tapping a file link in a reply opens the file preview; a session reference
   opens that conversation.
 - A CI workflow builds every pushed branch for device.
+- **Machines** (Folders → Tools on iPhone, the sidebar on iPad): the server's
+  Tailscale peers and manually added SSH hosts. A machine opens to a live SSH
+  probe of its hardware and load, with a Tailscale login link when discovery or
+  a probe needs one; manual machines can be added, edited and removed. The
+  probe result can be inserted into a message, and the composer's **+** →
+  **Machine…** picks a machine without leaving the conversation.
+- **Academic** (next to Machines): the server's paired Zotero library, by
+  collection and with search. Papers can be added by arXiv id, URL or DOI, and
+  a paper's preparation (PDF, analysis, code repository) is followed live,
+  including choosing an arXiv match or a repository. **Start Asking** opens a
+  conversation bound to the paper — in its cloned repository when code was
+  found, as a chat otherwise — and a bound conversation shows a paper bar that
+  opens the paper. Zotero pairing and the research agent are set from the
+  library.
 
 ### Changed
 
@@ -43,7 +57,8 @@ the text as the git tag message and the GitHub Release notes.
   show a language label when the fence names one.
 - Tool titles are no longer parsed as Markdown (`__init__.py` stayed bold), and
   file paths in tool cards and diffs show an icon for their type.
-
+- Server errors show their detail (such as the SSH error or a Tailscale login
+  link) under the message.
 - Apple signing now uses an ignored local configuration instead of a committed
   development team identifier.
 - The bundle identifier can be overridden the same way

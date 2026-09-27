@@ -93,6 +93,12 @@ final class SessionDetailViewModel {
     private(set) var summary: ConversationSummary?
     private(set) var sessionStats: SessionStats?
     private(set) var folder: FolderDetail?
+    /// The paper this conversation is about (Academic): from the draft that
+    /// started it, or looked up for an existing conversation.
+    private(set) var boundPaper: BoundPaper?
+    /// A paper-only draft's scratch directory (`create_chat_dir`): the agent's
+    /// cwd until `create_chat_conversation` turns it into a `chat` folder.
+    private var chatDirPath: String?
 
     /// The working tree's current git branch (for `folder`), shown + checkmarked
     /// in the branch selector. Seeded from conversation/folder metadata and
@@ -286,7 +292,7 @@ final class SessionDetailViewModel {
 
     /// The draft's agent/folder are still editable: a new session whose first
     /// send hasn't started yet (after that the conversation is being created).
-    var isDraftEditable: Bool { isNewSession && !hasStartedFirstSend }
+    var isDraftEditable: Bool { isNewSession && !hasStartedFirstSend && newRequest?.academic == nil }
 
     /// The agent identity for UI + connection purposes: the loaded summary's
     /// (existing / linked), else the draft's chosen agent.
@@ -352,6 +358,7 @@ final class SessionDetailViewModel {
             guard !didLoadDraftOptions else { return }
             didLoadDraftOptions = true
             await loadDraftOptions(preselectedFolderID: request.preselectedFolderID)
+            if let academic = request.academic { await prepareAcademicDraft(academic) }
         }
     }
 
@@ -393,6 +400,36 @@ final class SessionDetailViewModel {
             }
         }
         if let agent = selectedAgent { insertModel.agentType = agent }
+    }
+
+    // MARK: - Academic
+
+    /// The agent's cwd: the folder, or a paper-only draft's scratch directory.
+    private var workingDirectory: String? { folder?.path ?? chatDirPath }
+
+    /// A draft started from a paper runs its research agent, in the paper's
+    /// repository folder (preselected) or — paper only — in a fresh scratch
+    /// directory, and neither can be changed.
+    private func prepareAcademicDraft(_ academic: AcademicDraft) async {
+        boundPaper = BoundPaper(id: academic.paperID, title: academic.paperTitle)
+        selectedAgent = academic.agent
+        insertModel.agentType = academic.agent
+        guard academic.chatMode else { return }
+        folder = nil
+        currentBranch = nil
+        do {
+            chatDirPath = try await client.createChatDir()
+        } catch {
+            notice = Self.describe(error)
+        }
+    }
+
+    /// Look up the paper an existing conversation is bound to. Silent on
+    /// failure: an older server has no academic endpoints.
+    func loadBoundPaper() async {
+        guard boundPaper == nil, let id = conversationID,
+              let paper = try? await client.academicConversationPaper(conversationId: id) else { return }
+        boundPaper = BoundPaper(id: paper.id, title: paper.title)
     }
 
     // MARK: - Draft selection (new session only)
@@ -641,7 +678,7 @@ final class SessionDetailViewModel {
         // A draft (no linked summary yet) needs a folder + agent before it can
         // connect; lock the pickers the moment its first send begins.
         if summary == nil {
-            guard folder != nil, selectedAgent != nil else {
+            guard folder != nil || chatDirPath != nil, selectedAgent != nil else {
                 notice = "Pick a folder and agent first."
                 return
             }
@@ -747,7 +784,7 @@ final class SessionDetailViewModel {
             let prefs = preferredSelectors
             let conn = try await client.connect(
                 agentType: agentTypeForUI,
-                workingDir: folder?.path,
+                workingDir: workingDirectory,
                 sessionId: summary?.externalId,
                 preferredModeId: prefs.modeId,
                 preferredConfigValues: prefs.configValues
@@ -792,7 +829,7 @@ final class SessionDetailViewModel {
         let prefs = preferredSelectors
         return try await client.connect(
             agentType: agentTypeForUI,
-            workingDir: folder?.path,
+            workingDir: workingDirectory,
             sessionId: summary?.externalId,
             preferredModeId: prefs.modeId,
             preferredConfigValues: prefs.configValues
@@ -819,7 +856,7 @@ final class SessionDetailViewModel {
         let prefs = preferredSelectors
         let conn = try await client.connect(
             agentType: agentTypeForUI,
-            workingDir: folder?.path,
+            workingDir: workingDirectory,
             sessionId: summary?.externalId,
             preferredModeId: prefs.modeId,
             preferredConfigValues: prefs.configValues
@@ -856,12 +893,30 @@ final class SessionDetailViewModel {
     /// row was already created). On failure it throws into `runSend`'s `catch`,
     /// which rolls the optimistic send back.
     private func ensureConversationCreated(firstPromptText text: String) async throws {
-        guard conversationID == nil, let folderId = folder?.id, let agent = selectedAgent else { return }
-        let id = try await client.createConversation(
-            folderId: folderId,
-            agentType: agent,
-            title: Self.draftTitle(from: text)
-        )
+        guard conversationID == nil, let agent = selectedAgent else { return }
+        let paperID = newRequest?.academic?.paperID
+        let id: Int
+        if let folderId = folder?.id {
+            id = try await client.createConversation(
+                folderId: folderId,
+                agentType: agent,
+                title: Self.draftTitle(from: text),
+                academicPaperId: paperID
+            )
+        } else if let chatDirPath {
+            // Paper only: the scratch dir the agent is already running in
+            // becomes the conversation's `chat` folder.
+            let created = try await client.createChatConversation(
+                agentType: agent,
+                title: Self.draftTitle(from: text),
+                academicPaperId: paperID,
+                existingDir: chatDirPath
+            )
+            id = created.conversationId
+            folder = created.folder
+        } else {
+            return
+        }
         conversationID = id
         draftCreatedConversationID = id
         currentBranch = folder?.gitBranch

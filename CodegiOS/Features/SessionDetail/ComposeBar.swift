@@ -34,6 +34,7 @@ struct ComposeBar: View {
     @State private var showFileImporter = false
     @State private var showCamera = false
     @State private var presentedInsert: ComposeInsertModel.Source?
+    @State private var showMachinePicker = false
 
     private var hasText: Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -116,6 +117,11 @@ struct ComposeBar: View {
                 text = transform(text)
             }
         }
+        .sheet(isPresented: $showMachinePicker) {
+            MachinePickerSheet(client: insertModel.client) { context in
+                text = MachineContext.draft(text, appending: context)
+            }
+        }
         .animation(Theme.Motion.expand, value: isInFlight)
         .animation(Theme.Motion.expand, value: notice)
         .animation(Theme.Motion.expand, value: attachments)
@@ -154,6 +160,10 @@ struct ComposeBar: View {
                     Button { presentedInsert = source } label: {
                         Label(source.title, systemImage: source.systemImage)
                     }
+                }
+                // A machine's probe as context (the web's `/machine`).
+                Button { showMachinePicker = true } label: {
+                    Label("Machine…", systemImage: "server.rack")
                 }
             }
         } label: {

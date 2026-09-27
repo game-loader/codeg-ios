@@ -99,6 +99,15 @@ final class AppModel {
         case .project:
             sidebarSection = .projects
             if contentPath.last != route { contentPath.append(route) }
+        case .machines:
+            sidebarSection = .machines
+            contentPath = []
+        case .academic:
+            sidebarSection = .academic
+            contentPath = []
+        case .machine, .paper:
+            // Pushed within whichever section's list is showing.
+            if contentPath.last != route { contentPath.append(route) }
         }
     }
 

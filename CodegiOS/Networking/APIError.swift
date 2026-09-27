@@ -5,7 +5,9 @@ enum APIError: LocalizedError, Sendable {
     case invalidURL
     case unauthorized
     case turnInProgress
-    case server(status: Int, code: String?, message: String)
+    /// `detail` is the server's elaboration (git or ssh stderr, a login URL),
+    /// which the web shows in place of `message` when present.
+    case server(status: Int, code: String?, message: String, detail: String?)
     case transport(String)
     case decoding(String)
     /// A live agent connection vanished server-side (a WS attach returned
@@ -21,9 +23,11 @@ enum APIError: LocalizedError, Sendable {
             return "Authentication failed. Check the server token."
         case .turnInProgress:
             return "A turn is already running on this session."
-        case .server(let status, let code, let message):
-            if let code { return "\(message) (\(code), HTTP \(status))" }
-            return "\(message) (HTTP \(status))"
+        case .server(let status, let code, let message, let detail):
+            let summary = code.map { "\(message) (\($0), HTTP \(status))" } ?? "\(message) (HTTP \(status))"
+            guard let detail = detail?.trimmingCharacters(in: .whitespacesAndNewlines), !detail.isEmpty,
+                  detail != message else { return summary }
+            return "\(summary)\n\(detail)"
         case .transport(let detail):
             return "Network error: \(detail)"
         case .decoding(let detail):
@@ -37,7 +41,7 @@ enum APIError: LocalizedError, Sendable {
     /// `ensure_git_repo`, returning HTTP 422 `not_a_git_repository`. Lets the
     /// Changes/Commits views show a calm "not a repo" state instead of an error.
     var isNotAGitRepository: Bool {
-        if case .server(_, let code, _) = self { return code == "not_a_git_repository" }
+        if case .server(_, let code, _, _) = self { return code == "not_a_git_repository" }
         return false
     }
 
@@ -50,7 +54,7 @@ enum APIError: LocalizedError, Sendable {
         case .unauthorized:
             // Server-token auth, not a git remote — never trigger the git prompt.
             return false
-        case .server(_, let code, let message):
+        case .server(_, let code, let message, _):
             if code == "authentication_failed" { return true }
             let lower = message.lowercased()
             return lower.contains("authentication failed")
@@ -71,7 +75,7 @@ enum APIError: LocalizedError, Sendable {
         switch self {
         case .streamGone:
             return true
-        case .server(let status, let code, let message):
+        case .server(let status, let code, let message, _):
             return status == 404 || code == "connection_not_found" || code == "unknown_connection"
                 || message.lowercased().contains("connection not found")
         default:
@@ -87,7 +91,7 @@ enum APIError: LocalizedError, Sendable {
         switch self {
         case .transport:
             return true
-        case .server(let status, _, _):
+        case .server(let status, _, _, _):
             return status >= 500
         default:
             return false

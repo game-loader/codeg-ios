@@ -206,7 +206,8 @@ struct RootView: View {
             ProjectListView(
                 activity: model.activity,
                 client: model.selectedClient(),
-                onOpenProject: { model.open(.project($0)) }
+                onOpenProject: { model.open(.project($0)) },
+                onOpenTool: { model.open($0.route) }
             )
             .id(model.selectedServerID)
             .navigationDestination(for: Route.self) { route in
@@ -308,6 +309,12 @@ struct RootView: View {
                 client: model.selectedClient(),
                 onOpen: { model.open(.conversation($0)) }
             )
+        case .machines:
+            MachineListView(client: model.selectedClient())
+                .id(model.selectedServerID)
+        case .academic:
+            AcademicLibraryView(client: model.selectedClient(), onOpen: { model.open($0) })
+                .id(model.selectedServerID)
         case nil:
             ColumnPlaceholder(
                 icon: "sidebar.left",
@@ -371,6 +378,18 @@ struct RootView: View {
                     onNewSession: { model.open(.newSession(NewSessionRequest(preselectedFolderID: $0.id))) }
                 )
                 .id("\(server.id)|folder-\(id)")
+            case .machines:
+                MachineListView(client: client)
+                    .id(server.id)
+            case .machine(let machine):
+                MachineDetailView(client: client, machine: machine)
+                    .id("\(server.id)|machine-\(machine.id)")
+            case .academic:
+                AcademicLibraryView(client: client, onOpen: { model.open($0) })
+                    .id(server.id)
+            case .paper(let id):
+                PaperDetailView(client: client, paperID: id, onOpen: { model.open($0) })
+                    .id("\(server.id)|paper-\(id)")
             }
         } else {
             ColumnPlaceholder(
@@ -418,6 +437,12 @@ private struct SplitSidebar: View {
             Label("Activity", systemImage: "waveform")
                 .tag(SidebarSection.activity)
                 .badge(model.activity.running.count)
+            Section("Tools") {
+                ForEach(WorkspaceTool.allCases, id: \.self) { tool in
+                    Label(tool.title, systemImage: tool.systemImage)
+                        .tag(tool.sidebarSection)
+                }
+            }
         }
         .navigationTitle(model.selectedServer?.name ?? "Codeg")
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)

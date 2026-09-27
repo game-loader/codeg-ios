@@ -54,6 +54,8 @@ struct CreateConversationBody: Encodable, Sendable {
     let folderId: Int
     let agentType: AgentType
     var title: String?
+    /// Binds the new conversation to an Academic paper.
+    var academicPaperId: String?
 }
 
 /// Body for `acp_find_connection_for_conversation`. The server requires
@@ -194,4 +196,5 @@ struct CloneRepositoryBody: Encodable, Sendable {
 struct ServerError: Decodable, Sendable {
     let code: String?
     let message: String?
+    let detail: String?
 }

@@ -26,6 +26,8 @@ struct SessionDetailView: View {
     @State private var showDeleteConfirm = false
     /// A file a transcript link pointed at, shown in a preview sheet.
     @State private var previewedFile: PreviewedFile?
+    /// The bound paper, opened from the paper bar.
+    @State private var shownPaper: BoundPaper?
 
     init(server: ServerProfile, client: CodegClient, conversationID: Int,
          onOpenSession: ((NewSessionRequest) -> Void)? = nil) {
@@ -57,6 +59,26 @@ struct SessionDetailView: View {
             content
         }
         .environment(\.openURL, OpenURLAction(handler: open(link:)))
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let paper = model.boundPaper {
+                PaperContextBar(paper: paper) { shownPaper = paper }
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .sheet(item: $shownPaper) { paper in
+            NavigationStack {
+                PaperDetailView(client: client, paperID: paper.id)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { shownPaper = nil }
+                        }
+                    }
+            }
+        }
+        // Once the conversation is known (loaded, or linked by a first send):
+        // is it about a paper?
+        .task(id: model.conversationID) { await model.loadBoundPaper() }
         .sheet(item: $previewedFile) { file in
             NavigationStack {
                 FilePreviewView(client: client, rootPath: file.root, absPath: file.path)

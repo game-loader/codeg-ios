@@ -9,6 +9,9 @@ struct ProjectListView: View {
     let activity: ActivityModel
     let client: CodegClient?
     let onOpenProject: (Int) -> Void
+    /// Opens a workspace tool (Machines, Academic). Nil where the host lists the
+    /// tools itself — the iPad sidebar has rows for them.
+    var onOpenTool: ((WorkspaceTool) -> Void)? = nil
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -105,14 +108,35 @@ struct ProjectListView: View {
             InlineErrorView(message: error) {
                 Task { await activity.refresh(client: client) }
             }
-        } else if sortedFolders.isEmpty {
-            EmptyStateView(
-                icon: "folder",
-                title: "No Folders",
-                message: "Add a folder in the codeg desktop app, then start tasks in it from here."
-            )
+        } else if sortedFolders.isEmpty, onOpenTool == nil {
+            noFolders
         } else {
             projectList
+        }
+    }
+
+    private var noFolders: some View {
+        EmptyStateView(
+            icon: "folder",
+            title: "No Folders",
+            message: "Add a folder in the codeg desktop app, then start tasks in it from here."
+        )
+    }
+
+    /// Machines and Academic, above the folders: workspace-wide tools with no
+    /// tab of their own on iPhone (the tab bar is full).
+    @ViewBuilder
+    private var toolsSection: some View {
+        if let onOpenTool {
+            EditorSection(title: "Tools") {
+                ForEach(Array(WorkspaceTool.allCases.enumerated()), id: \.element) { index, tool in
+                    if index > 0 { SettingsRowDivider() }
+                    Button { onOpenTool(tool) } label: {
+                        SettingsGroupedRowLabel(icon: tool.systemImage, title: tool.title)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
     }
 
@@ -122,17 +146,17 @@ struct ProjectListView: View {
     /// plain `VStack` inside the card is fine (no virtualization needed here).
     private var projectList: some View {
         ScrollView {
-            GlassCard(cornerRadius: Theme.Radius.lg, padding: 0) {
-                VStack(spacing: 0) {
-                    ForEach(Array(sortedFolders.enumerated()), id: \.element.id) { index, folder in
-                        if index > 0 {
-                            InsetDivider(leading: FolderRowMetrics.dividerInset)
-                        }
-                        ProjectRow(
-                            folder: folder,
-                            runningCount: activity.runningCount(folderID: folder.id),
-                            onTap: { onOpenProject(folder.id) }
-                        )
+            VStack(alignment: .leading, spacing: Theme.Layout.sectionSpacing) {
+                toolsSection
+                if sortedFolders.isEmpty {
+                    noFolders.padding(.top, 24)
+                } else if onOpenTool != nil {
+                    // Titled only next to the Tools section; alone, the screen
+                    // title already says what the list is.
+                    EditorSection(title: "Folders") { folderRows }
+                } else {
+                    GlassCard(cornerRadius: Theme.Radius.lg, padding: 0) {
+                        VStack(spacing: 0) { folderRows }
                     }
                 }
             }
@@ -142,6 +166,20 @@ struct ProjectListView: View {
         }
         .scrollContentBackground(.hidden)
         .refreshable { await activity.refresh(client: client) }
+    }
+
+    @ViewBuilder
+    private var folderRows: some View {
+        ForEach(Array(sortedFolders.enumerated()), id: \.element.id) { index, folder in
+            if index > 0 {
+                InsetDivider(leading: FolderRowMetrics.dividerInset)
+            }
+            ProjectRow(
+                folder: folder,
+                runningCount: activity.runningCount(folderID: folder.id),
+                onTap: { onOpenProject(folder.id) }
+            )
+        }
     }
 
     /// Server `sortOrder` first, then name. Reads `displayFolders` (open + regular,
