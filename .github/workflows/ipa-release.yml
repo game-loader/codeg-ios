@@ -227,6 +227,15 @@ jobs:
           fi
           mkdir -p build/package/Payload build/export
           ditto --norsrc --noextattr --noacl "$APP" build/package/Payload/Codeg.app
+          # An ad-hoc signature carrying an entitlements plist: installers re-sign
+          # the app anyway, but some (Sideloadly on macOS) parse the existing
+          # entitlements first and fail with "Invalid file" when there are none.
+          # get-task-allow is granted by every development profile.
+          /usr/libexec/PlistBuddy -c 'Add :get-task-allow bool true' build/adhoc.entitlements
+          codesign --force --sign - --timestamp=none \
+            --entitlements build/adhoc.entitlements build/package/Payload/Codeg.app
+          codesign --verify --strict --verbose=2 build/package/Payload/Codeg.app
+          codesign --display --entitlements - build/package/Payload/Codeg.app
           IPA=Codeg-${TAG}-unsigned.ipa
           (
             cd build/package
@@ -285,7 +294,7 @@ jobs:
               "$VERSION" "$BUILD_NUMBER" "$XCODE_VERSION" "$SDK_VERSION"
             printf '\n## Install\n\n'
             printf '%s\n' \
-              'This build is unsigned. Install it with Sideloadly, AltStore or SideStore, which re-sign it with your Apple ID and may rewrite the bundle ID.' \
+              'This build has only an ad-hoc signature (no certificate). Install it with Sideloadly, AltStore or SideStore, which re-sign it with your Apple ID and may rewrite the bundle ID.' \
               'Free Apple ID signing expires after 7 days (refresh or re-sign), with at most 3 active sideloaded apps.'
             if [[ "$CHANGELOG_BODY" =~ [^[:space:]] ]]; then
               printf '\n## Changelog\n%s\n' "$CHANGELOG_BODY"

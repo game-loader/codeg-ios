@@ -131,7 +131,8 @@ Xcode version.
 Download `Codeg-<tag>-unsigned.ipa` and its `.ipa.sha256` checksum from the
 GitHub Release, or the workflow's artifact (retained for 7 days, including when
 publishing fails). The build needs no signing certificates, provisioning
-profiles or secrets beyond `GITHUB_TOKEN`. It is unsigned: install it with
+profiles or secrets beyond `GITHUB_TOKEN`. The app carries only an ad-hoc
+signature (no certificate), so it has to be re-signed: install it with
 **Sideloadly, AltStore or SideStore**, which re-sign it with your Apple ID and
 may rewrite the bundle identifier. Free Apple ID signing expires after
 **7 days** (refresh or re-sign), with at most **3 active sideloaded apps**.
