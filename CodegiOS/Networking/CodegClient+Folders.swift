@@ -25,6 +25,14 @@ extension CodegClient {
         try await postJSON("read_file_preview", ReadFilePreviewBody(rootPath: rootPath, path: path))
     }
 
+    /// Bounded binary read for images under the folder root. The server returns
+    /// a bare JSON base64 string and confines the relative path to the workspace.
+    func readWorkspaceImage(rootPath: String, path: String, maxBytes: Int) async throws -> String {
+        try await postJSON("read_workspace_file_base64", ReadWorkspaceImageBody(
+            rootPath: rootPath, path: path, maxBytes: maxBytes
+        ))
+    }
+
     // MARK: - Git history
 
     /// Commit history for the repo at `path`. `limit` caps the count (server
@@ -172,6 +180,12 @@ extension CodegClient {
 struct ReadFilePreviewBody: Encodable, Sendable {
     let rootPath: String
     let path: String
+}
+
+struct ReadWorkspaceImageBody: Encodable, Sendable {
+    let rootPath: String
+    let path: String
+    let maxBytes: Int
 }
 
 /// Body for `git_log`.

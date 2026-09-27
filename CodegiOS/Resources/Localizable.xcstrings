@@ -4752,6 +4752,16 @@
         }
       }
     },
+    "Image is too large to preview." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "图片太大，无法预览。"
+          }
+        }
+      }
+    },
     "Insert" : {
       "extractionState" : "stale",
       "localizations" : {

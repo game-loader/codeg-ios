@@ -1,4 +1,5 @@
 import SwiftUI
+import ImageIO
 
 /// A folder's file browser: the immediate children of `dirPath`, directories
 /// first. Directories drill in (pushing another `FolderFilesView`); files open a
@@ -219,29 +220,43 @@ enum FileIcon {
 
 // MARK: - File preview
 
-/// A read-only file viewer: fetches text via `read_file_preview` (path made
-/// relative to the folder root) and renders it as monospaced, line-numbered,
-/// selectable code on the sunken code surface.
+/// A read-only file viewer. Raster images use a bounded binary read; other files
+/// use the text endpoint and its monospaced, line-numbered code surface.
 struct FilePreviewView: View {
     let client: CodegClient
     let rootPath: String
     let absPath: String
 
     @State private var content: String?
+    @State private var previewImage: UIImage?
     @State private var isLoading = false
     @State private var error: String?
+    @Environment(\.locale) private var locale
+
+    private static let maxImageBytes = 12 * 1024 * 1024
+    private static let maxImagePixels = 40_000_000
+    private static let maxImageDimension = 4096
+
+    private var isRasterImage: Bool {
+        switch (name as NSString).pathExtension.lowercased() {
+        case "png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tif", "tiff", "ico":
+            return true
+        default:
+            return false
+        }
+    }
 
     private var name: String { (absPath as NSString).lastPathComponent }
 
     var body: some View {
         ZStack {
             CodegBackground()
-            content(for: self.content)
+            previewContent
         }
         .navigationTitle(name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if let content, !content.isEmpty {
+            if !isRasterImage, let content, !content.isEmpty {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         UIPasteboard.general.string = content
@@ -257,12 +272,22 @@ struct FilePreviewView: View {
     }
 
     @ViewBuilder
-    private func content(for text: String?) -> some View {
+    private var previewContent: some View {
         if isLoading {
             LoadingView(label: "Loading \(name)…")
         } else if let error {
             InlineErrorView(message: error) { Task { await load() } }
-        } else if let text {
+        } else if let previewImage {
+            GeometryReader { geometry in
+                ScrollView {
+                    Image(uiImage: previewImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: geometry.size.width)
+                        .frame(minHeight: geometry.size.height)
+                }
+            }
+        } else if let text = content {
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 EmptyStateView(icon: "doc", title: "Empty File", message: "This file has no contents.")
             } else {
@@ -283,11 +308,48 @@ struct FilePreviewView: View {
         error = nil
         let relative = FolderPaths.relative(absPath, to: rootPath)
         do {
-            content = try await client.readFilePreview(rootPath: rootPath, path: relative).content
+            if isRasterImage {
+                let encoded = try await client.readWorkspaceImage(
+                    rootPath: rootPath, path: relative, maxBytes: Self.maxImageBytes
+                )
+                let image = await Task.detached(priority: .userInitiated) {
+                    Self.decodeImage(encoded)
+                }.value
+                guard let image else {
+                    self.error = String(localized: "Image could not be decoded", locale: locale)
+                    isLoading = false
+                    return
+                }
+                previewImage = image
+            } else {
+                content = try await client.readFilePreview(rootPath: rootPath, path: relative).content
+            }
         } catch {
-            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            if let apiError = error as? APIError,
+               case .server(_, "invalid_input", "File is too large to attach", _) = apiError {
+                self.error = String(localized: "Image is too large to preview.", locale: locale)
+            } else {
+                self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
         }
         isLoading = false
+    }
+
+    private static func decodeImage(_ encoded: String) -> UIImage? {
+        guard encoded.utf8.count <= ((maxImageBytes + 2) / 3) * 4,
+              let bytes = Data(base64Encoded: encoded), bytes.count <= maxImageBytes,
+              let source = CGImageSourceCreateWithData(bytes as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0, width <= maxImagePixels / height else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxImageDimension
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return UIImage(cgImage: thumbnail)
     }
 }
 
