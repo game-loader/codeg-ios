@@ -326,7 +326,8 @@ struct FilePreviewView: View {
             }
         } catch {
             if let apiError = error as? APIError,
-               case .server(_, "invalid_input", "File is too large to attach", _) = apiError {
+               case let .server(_, code, message, _) = apiError,
+               code == "invalid_input", message == "File is too large to attach" {
                 self.error = String(localized: "Image is too large to preview.", locale: locale)
             } else {
                 self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
