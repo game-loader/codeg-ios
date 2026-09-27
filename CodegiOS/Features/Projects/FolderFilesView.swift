@@ -1,6 +1,12 @@
 import SwiftUI
 import ImageIO
 
+private enum FilePreviewLimits {
+    static let maxImageBytes = 12 * 1024 * 1024
+    static let maxImagePixels = 40_000_000
+    static let maxImageDimension = 4096
+}
+
 /// A folder's file browser: the immediate children of `dirPath`, directories
 /// first. Directories drill in (pushing another `FolderFilesView`); files open a
 /// preview. Used both as the embedded root of the Files tab and as each pushed
@@ -233,10 +239,6 @@ struct FilePreviewView: View {
     @State private var error: String?
     @Environment(\.locale) private var locale
 
-    private static let maxImageBytes = 12 * 1024 * 1024
-    private static let maxImagePixels = 40_000_000
-    private static let maxImageDimension = 4096
-
     private var isRasterImage: Bool {
         switch (name as NSString).pathExtension.lowercased() {
         case "png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tif", "tiff", "ico":
@@ -310,7 +312,7 @@ struct FilePreviewView: View {
         do {
             if isRasterImage {
                 let encoded = try await client.readWorkspaceImage(
-                    rootPath: rootPath, path: relative, maxBytes: Self.maxImageBytes
+                    rootPath: rootPath, path: relative, maxBytes: FilePreviewLimits.maxImageBytes
                 )
                 let image = await Task.detached(priority: .userInitiated) {
                     Self.decodeImage(encoded)
@@ -336,18 +338,18 @@ struct FilePreviewView: View {
         isLoading = false
     }
 
-    private static func decodeImage(_ encoded: String) -> UIImage? {
-        guard encoded.utf8.count <= ((maxImageBytes + 2) / 3) * 4,
-              let bytes = Data(base64Encoded: encoded), bytes.count <= maxImageBytes,
+    private nonisolated static func decodeImage(_ encoded: String) -> UIImage? {
+        guard encoded.utf8.count <= ((FilePreviewLimits.maxImageBytes + 2) / 3) * 4,
+              let bytes = Data(base64Encoded: encoded), bytes.count <= FilePreviewLimits.maxImageBytes,
               let source = CGImageSourceCreateWithData(bytes as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
               let height = properties[kCGImagePropertyPixelHeight] as? Int,
-              width > 0, height > 0, width <= maxImagePixels / height else { return nil }
+              width > 0, height > 0, width <= FilePreviewLimits.maxImagePixels / height else { return nil }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxImageDimension
+            kCGImageSourceThumbnailMaxPixelSize: FilePreviewLimits.maxImageDimension
         ]
         guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
         return UIImage(cgImage: thumbnail)
