@@ -24,8 +24,25 @@ the text as the git tag message and the GitHub Release notes.
 - Secret questions (`is_secret`) take a masked answer field.
 - On/off agent config options appear in the options sheet.
 - Folder aliases show as `alias [ name ]`, as on the web.
+- User turns list what the server flattened into them (attachments,
+  `@`-mentions, pages from the built-in browser, machine and paper context) as
+  chips under the message instead of raw links and context dumps. A web chip
+  opens the site; a machine or paper chip shows the context that was sent.
+- Tapping a file link in a reply opens the file preview; a session reference
+  opens that conversation.
+- A CI workflow builds every pushed branch for device.
 
 ### Changed
+
+- Markdown renders closer to the web client: inline code is a monospaced pill,
+  file and `codeg://` references are colored tokens with an icon, web links are
+  underlined, lists nest (with task checkboxes and CommonMark numbering), quotes
+  can hold lists and code, tables size columns to their content, and headings
+  get section spacing. User messages render Markdown too, keeping indentation.
+- Code blocks use primary text on a panel that is visible in dark mode, and only
+  show a language label when the fence names one.
+- Tool titles are no longer parsed as Markdown (`__init__.py` stayed bold), and
+  file paths in tool cards and diffs show an icon for their type.
 
 - Apple signing now uses an ignored local configuration instead of a committed
   development team identifier.

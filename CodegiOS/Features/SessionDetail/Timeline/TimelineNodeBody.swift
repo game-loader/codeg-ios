@@ -70,21 +70,28 @@ struct NodeBody: View {
 /// every actor on one spine, so user prompts are rail nodes too — not right-side
 /// bubbles). The card fills the content column to the same width as the agent's
 /// message cards, so a user turn and the reply it prompts read as one column.
+///
+/// The text is what the person wrote, rendered as Markdown; what the server
+/// flattened into it (attachments, mentions, page, machine and paper context)
+/// is lifted out into a chip row underneath (`UserResources`).
 private struct UserNodeBody: View {
     let turn: MessageTurn
 
     var body: some View {
+        let content = UserTurnContent.of(turn)
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(turn.blocks.enumerated()), id: \.offset) { _, block in
-                switch block {
-                case .text(let text):
-                    MarkdownText(raw: text)
-                        .multilineTextAlignment(.leading)
-                case .image(let image):
+            ForEach(Array(content.texts.enumerated()), id: \.offset) { _, text in
+                MarkdownContent(raw: text, keepsIndentation: true)
+            }
+            ForEach(Array(content.otherBlocks.enumerated()), id: \.offset) { _, block in
+                if case .image(let image) = block {
                     InlineImageView(image: image, caption: nil)
-                default:
+                } else {
                     ContentBlockView(block: block)
                 }
+            }
+            if !content.resources.isEmpty {
+                UserResourceChips(resources: content.resources)
             }
         }
         .padding(.horizontal, 14)
@@ -96,6 +103,38 @@ private struct UserNodeBody: View {
         )
         .hairlineBorder(Theme.Radius.md, color: Theme.accent.opacity(0.30))
     }
+}
+
+/// A user turn split for display. The split runs regexes over the whole text
+/// and recycled `List` rows re-render often, so it is memoized — keyed by the
+/// text alone (hashing image blocks would hash their base64 data every time).
+/// Main-thread only (read from `body`).
+private struct UserTurnContent {
+    let texts: [String]
+    let otherBlocks: [ContentBlock]
+    let resources: [UserResource]
+
+    static func of(_ turn: MessageTurn) -> UserTurnContent {
+        var texts: [String] = []
+        var others: [ContentBlock] = []
+        for block in turn.blocks {
+            if case .text(let text) = block { texts.append(text) } else { others.append(block) }
+        }
+        let split = cachedSplit(texts)
+        return UserTurnContent(texts: split.texts, otherBlocks: others, resources: split.resources)
+    }
+
+    private static func cachedSplit(_ texts: [String]) -> (texts: [String], resources: [UserResource]) {
+        if let hit = cache[texts] { return hit }
+        let split = UserResources.split(texts)
+        cache[texts] = split
+        order.append(texts)
+        if order.count > 300 { cache.removeValue(forKey: order.removeFirst()) }
+        return split
+    }
+
+    private static var cache: [[String]: (texts: [String], resources: [UserResource])] = [:]
+    private static var order: [[String]] = []
 }
 
 // MARK: - System

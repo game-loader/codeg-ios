@@ -131,7 +131,9 @@ struct ToolCallCard: View {
         // No leading tool icon here: the timeline gutter marker already shows it
         // (and tints it by state), so repeating it in the card is redundant.
         HStack(spacing: 8) {
-            Text(LocalizedStringKey(stringLiteral: vm.displayTitle))
+            // Looked up (the fixed titles are translated) but never parsed as
+            // Markdown: a command like `ls __init__.py` must not turn bold.
+            Text(verbatim: Bundle.main.localizedString(forKey: vm.displayTitle, value: nil, table: nil))
                 .font(Theme.Typography.cardTitle)
                 .foregroundStyle(Theme.textPrimary)
                 .lineLimit(1)
@@ -277,7 +279,7 @@ private struct FileInputBody: View {
         VStack(alignment: .leading, spacing: 6) {
             if let path = strArg(args, ["file_path", "path", "filename", "file", "target_file"]) {
                 HStack(spacing: 6) {
-                    Image(systemName: "doc").font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+                    Image(systemName: FileIcon.symbol(for: path)).font(.system(size: 10)).foregroundStyle(ReferencePalette.file)
                     Text(path)
                         .font(.mono(11)).foregroundStyle(Theme.textSecondary)
                         .lineLimit(1).truncationMode(.middle).textSelection(.enabled)

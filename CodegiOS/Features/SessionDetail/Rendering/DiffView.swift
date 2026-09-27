@@ -93,6 +93,9 @@ private struct DiffFileView: View {
     private var header: some View {
         HStack(spacing: 8) {
             ModeBadge(mode: file.mode)
+            Image(systemName: FileIcon.symbol(for: file.path))
+                .font(.system(size: 10))
+                .foregroundStyle(ReferencePalette.file)
             Text(PathFormat.short(file.path))
                 .font(.mono(11))
                 .foregroundStyle(Theme.textSecondary)

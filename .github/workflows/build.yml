@@ -1,0 +1,59 @@
+name: Build
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install XcodeGen 2.46.0 and generate project
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/xcodegen"
+          curl --fail --location --silent --show-error --retry 3 \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip \
+            -o "$RUNNER_TEMP/xcodegen.zip"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP/xcodegen"
+          "$(find "$RUNNER_TEMP/xcodegen" -type f -name xcodegen)" generate
+
+      - name: Build for device (unsigned)
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          xcodebuild build \
+            -project CodegiOS.xcodeproj -scheme CodegiOS -configuration Debug \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$PWD/build/DerivedData" \
+            -skipMacroValidation -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
+            DEVELOPMENT_TEAM= CODEG_DEVELOPMENT_TEAM= \
+            2>&1 | tee build/xcodebuild.log | xcbeautify
+
+      - name: Save raw build log on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: xcodebuild-log-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/xcodebuild.log
+          retention-days: 7
+          if-no-files-found: ignore

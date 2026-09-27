@@ -35,8 +35,8 @@ struct CopyButton: View {
     }
 }
 
-/// A fenced code block: a language label + copy button header over a near-black,
-/// horizontally scrollable monospaced body. Used by `MarkdownContent` for the
+/// A fenced code block: a language label + copy button header over a panel
+/// with a horizontally scrollable monospaced body. Used by `MarkdownContent` for the
 /// ``` fences in an assistant reply, and reused for tool bodies that show a
 /// shell command or pretty-printed JSON.
 ///
@@ -70,10 +70,10 @@ struct CodeBlockView: View {
             header
             Rectangle().fill(Theme.hairline).frame(height: 0.5)
             ScrollView(.horizontal, showsIndicators: false) {
-                Text(shown)
+                Text(verbatim: shown)
                     .font(Theme.Typography.code)
                     .lineSpacing(Theme.Typography.codeLineSpacing)
-                    .foregroundStyle(Theme.textSecondary)
+                    .foregroundStyle(Theme.textPrimary)
                     .textSelection(.enabled)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
@@ -86,9 +86,12 @@ struct CodeBlockView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text(LocalizedStringKey(stringLiteral: displayLanguage))
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                .foregroundStyle(Theme.textTertiary)
+            // The fence's info string, verbatim: `swift` is not a UI string.
+            if let displayLanguage {
+                Text(verbatim: displayLanguage)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Theme.textTertiary)
+            }
             Spacer(minLength: 0)
             CopyButton(text: trimmedTrailing)
         }
@@ -112,11 +115,10 @@ struct CodeBlockView: View {
         .buttonStyle(.plain)
     }
 
-    private var displayLanguage: String {
+    private var displayLanguage: String? {
         let l = (language ?? "").trimmingCharacters(in: .whitespaces).lowercased()
-        return l.isEmpty ? "code" : l
+        return l.isEmpty ? nil : l
     }
 
-    /// Darker than the transcript backdrop so the block reads as an inset panel.
-    private static let surface = Theme.codeSurface
+    private static let surface = Theme.codeBlockSurface
 }

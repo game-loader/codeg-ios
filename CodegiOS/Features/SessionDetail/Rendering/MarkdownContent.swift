@@ -1,27 +1,10 @@
 import SwiftUI
 
-/// A parsed block of Markdown. Inline spans (bold, italic, code, links) are
-/// pre-parsed into `AttributedString` at parse time so the whole block list can
-/// be cached per source string — the recycling `List` then re-displays a turn
-/// for free. Fenced code keeps its raw text (rendered by `CodeBlockView`).
-enum MarkdownBlock {
-    case paragraph(AttributedString)
-    case heading(level: Int, AttributedString)
-    case bulletList([AttributedString])
-    case numberedList([(marker: String, content: AttributedString)])
-    case quote([AttributedString])
-    case code(language: String?, code: String)
-    case rule
-    case table(header: [AttributedString], rows: [[AttributedString]])
-}
-
-/// Block-level Markdown for finalized assistant text. Unlike `MarkdownText`
-/// (Apple's *inline-only* parser, which leaves ``` fences as literal backticks),
-/// this splits the source into real blocks — paragraphs, headings, lists,
-/// quotes, fenced code, rules, GFM tables — so a coding agent's replies render
-/// like a chat client instead of a wall of text. Inline content inside each
-/// block still goes through `MarkdownText.attributed(from:)` for bold/italic/
-/// inline-code/links.
+/// Block-level Markdown for assistant replies and user turns. `MarkdownParser`
+/// splits the source into paragraphs, headings, nested lists, quotes, fenced
+/// code, rules and GFM tables, so a coding agent's reply renders like a chat
+/// client instead of a wall of text; each block's inline content (code pills,
+/// file tokens, links) is drawn by `InlineMarkdown`.
 ///
 /// Streaming text uses this too, via `LiveTextNode` with `streaming: true`, which
 /// parses directly and bypasses the block cache (the partial strings would only
@@ -33,117 +16,157 @@ struct MarkdownContent: View {
     /// evict useful finalized entries). The finalized turn re-renders once through
     /// the cached path.
     var streaming: Bool = false
-
-    private var blocks: [MarkdownBlock] {
-        streaming ? MarkdownContent.parseBlocks(raw) : MarkdownContent.blocks(for: raw)
-    }
+    /// Keep paragraph lines' indentation — for what a person typed.
+    var keepsIndentation: Bool = false
 
     var body: some View {
-        let parsed = blocks
-        let lastIndex = parsed.count - 1
+        MarkdownBlocks(
+            nodes: streaming
+                ? Self.parse(raw, keepsIndentation: keepsIndentation)
+                : Self.nodes(for: raw, keepsIndentation: keepsIndentation),
+            caret: streaming
+        )
+    }
+}
+
+/// A run of blocks. The streaming caret rides the last block only when it is a
+/// paragraph — a code/list/table tail is self-evidently in progress already.
+private struct MarkdownBlocks: View {
+    let nodes: [MarkdownNode<String>]
+    var secondary = false
+    var caret = false
+
+    var body: some View {
         VStack(alignment: .leading, spacing: Theme.Typography.blockSpacing) {
-            ForEach(Array(parsed.enumerated()), id: \.offset) { idx, block in
-                // Streaming "typing" caret rides the trailing paragraph only —
-                // a code/list/table tail is self-evidently in progress already.
-                view(for: block, caret: streaming && idx == lastIndex && Self.isParagraph(block))
+            ForEach(Array(nodes.enumerated()), id: \.offset) { index, node in
+                MarkdownBlockView(
+                    node: node,
+                    isFirst: index == 0,
+                    secondary: secondary,
+                    caret: caret && index == nodes.count - 1
+                )
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
 
-    private static func isParagraph(_ block: MarkdownBlock) -> Bool {
-        if case .paragraph = block { return true }
-        return false
+private struct MarkdownBlockView: View {
+    let node: MarkdownNode<String>
+    let isFirst: Bool
+    /// Quoted content reads a step quieter than the reply around it.
+    let secondary: Bool
+    let caret: Bool
+
+    private var color: Color { secondary ? Theme.textSecondary : Theme.textPrimary }
+
+    var body: some View {
+        switch node {
+        case .paragraph(let text):
+            if caret {
+                CaretParagraph(raw: text, color: color)
+            } else {
+                InlineMarkdownText(raw: text, color: color)
+            }
+
+        case .heading(let level, let text):
+            InlineMarkdownText(
+                raw: text,
+                style: .heading,
+                font: Theme.Typography.heading(level).weight(Theme.Typography.headingWeight(level)),
+                color: color,
+                lineSpacing: Theme.Typography.headingLineSpacing
+            )
+            // A heading opens a section: more air above than between paragraphs.
+            .padding(.top, isFirst ? 0 : Theme.Typography.headingTopSpacing(level))
+
+        case .list(let items):
+            MarkdownList(items: items, color: color)
+
+        case .quote(let children):
+            // Type-erased: a quote holds blocks, which may hold quotes.
+            AnyView(MarkdownBlocks(nodes: children, secondary: true))
+                .padding(.leading, 14)
+                .overlay(alignment: .leading) {
+                    Capsule().fill(Theme.quoteBar).frame(width: 3)
+                }
+
+        case .code(let language, let code):
+            CodeBlockView(code: code, language: language)
+
+        case .rule:
+            Rectangle().fill(Theme.hairline).frame(height: 0.5).padding(.vertical, 4)
+
+        case .table(let table):
+            MarkdownTableView(table: table)
+        }
+    }
+}
+
+// MARK: - Lists
+
+/// A list with its nesting flattened into levels: each row indents to where its
+/// parent's text starts, and markers sit in a column of one width per level so
+/// the item text lines up.
+private struct MarkdownList: View {
+    let items: [MarkdownListItem<String>]
+    let color: Color
+
+    private static let markerSpacing: CGFloat = 7
+
+    var body: some View {
+        let widths = markerWidths
+        VStack(alignment: .leading, spacing: Theme.Typography.listItemSpacing) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                HStack(alignment: .firstTextBaseline, spacing: Self.markerSpacing) {
+                    marker(item)
+                        .fixedSize()
+                        .frame(minWidth: widths[item.level] ?? 14, alignment: .trailing)
+                    InlineMarkdownText(raw: item.content, color: color)
+                }
+                .padding(.leading, indent(item.level, widths: widths))
+            }
+        }
     }
 
     @ViewBuilder
-    private func view(for block: MarkdownBlock, caret: Bool = false) -> some View {
-        switch block {
-        case .paragraph(let a):
-            if caret {
-                CaretParagraph(base: a)
-            } else {
-                Text(a)
-                    .font(Theme.Typography.messageBody)
-                    .lineSpacing(Theme.Typography.messageLineSpacing)
-                    .foregroundStyle(Theme.textPrimary)
-                    .textSelection(.enabled)
-                    .tint(Theme.accent)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-        case .heading(let level, let a):
-            Text(a)
-                .font(Theme.Typography.heading(level))
-                .lineSpacing(Theme.Typography.headingLineSpacing)
-                .fontWeight(Theme.Typography.headingWeight(level))
-                .foregroundStyle(Theme.textPrimary)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 2)
-
-        case .bulletList(let items):
-            VStack(alignment: .leading, spacing: Theme.Typography.listItemSpacing) {
-                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    listRow(marker: "•", content: item)
-                }
-            }
-
-        case .numberedList(let items):
-            VStack(alignment: .leading, spacing: Theme.Typography.listItemSpacing) {
-                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    listRow(marker: item.marker, content: item.content)
-                }
-            }
-
-        case .quote(let items):
-            HStack(alignment: .top, spacing: 8) {
-                RoundedRectangle(cornerRadius: 1).fill(Theme.accent.opacity(0.5)).frame(width: 3)
-                VStack(alignment: .leading, spacing: Theme.Typography.listItemSpacing) {
-                    ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                        Text(item)
-                            .font(Theme.Typography.quote)
-                            .lineSpacing(Theme.Typography.quoteLineSpacing)
-                            .foregroundStyle(Theme.textSecondary)
-                            .italic()
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-            }
-
-        case .code(let lang, let code):
-            CodeBlockView(code: code, language: lang)
-
-        case .rule:
-            Rectangle().fill(Theme.hairline).frame(height: 0.5).padding(.vertical, 2)
-
-        case .table(let header, let rows):
-            MarkdownTable(header: header, rows: rows)
+    private func marker(_ item: MarkdownListItem<String>) -> some View {
+        switch item.marker {
+        case .bullet:
+            Text(verbatim: Self.bullets[min(item.level, Self.bullets.count - 1)])
+                .font(Theme.Typography.messageBody)
+                .foregroundStyle(Theme.textTertiary)
+        case .ordered(let number):
+            Text(verbatim: "\(number).")
+                .font(Theme.Typography.messageBody.monospacedDigit())
+                .foregroundStyle(Theme.textSecondary)
+        case .task(let checked):
+            Text(Image(systemName: checked ? "checkmark.square.fill" : "square"))
+                .font(Theme.Typography.messageBody)
+                .foregroundStyle(checked ? Theme.accent : Theme.textTertiary)
         }
     }
 
-    private func listRow(marker: String, content: AttributedString) -> some View {
-        HStack(alignment: .top, spacing: 6) {
-            Text(marker)
-                .font(Theme.Typography.messageBody)
-                .foregroundStyle(Theme.textTertiary)
-                // Marker hugs the block's left edge (no leading indent) so lists
-                // line up with paragraphs/headings; the small min-width keeps
-                // multi-line item text aligned past the marker.
-                .frame(minWidth: 14, alignment: .leading)
-            Text(content)
-                .font(Theme.Typography.messageBody)
-                .lineSpacing(Theme.Typography.messageLineSpacing)
-                .foregroundStyle(Theme.textPrimary)
-                .textSelection(.enabled)
-                .tint(Theme.accent)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+    private static let bullets = ["•", "◦", "▪\u{FE0E}"]
+
+    /// Per level, room for the widest marker: numbers need a digit's width each
+    /// plus the period; bullets and checkboxes one glyph.
+    private var markerWidths: [Int: CGFloat] {
+        var widths: [Int: CGFloat] = [:]
+        for item in items {
+            let width: CGFloat
+            if case .ordered(let number) = item.marker {
+                width = CGFloat(String(number).count) * 10.5 + 6
+            } else {
+                width = 16
+            }
+            widths[item.level] = max(widths[item.level] ?? 0, width)
         }
+        return widths
+    }
+
+    private func indent(_ level: Int, widths: [Int: CGFloat]) -> CGFloat {
+        (0..<level).reduce(0) { $0 + (widths[$1] ?? 16) + Self.markerSpacing }
     }
 }
 
@@ -158,72 +181,135 @@ struct MarkdownContent: View {
 /// *ambient* `withAnimation(.repeatForever)` would make every concurrent layout
 /// change animate too, so each streamed token would interpolate the caret's
 /// x-position across the line (it visibly flew right). A hard terminal-style
-/// blink keeps the caret pinned to the text end at every frame. `textSelection`
-/// is omitted: streaming text isn't selected mid-flight.
+/// blink keeps the caret pinned to the text end at every frame. Selection is
+/// off: streaming text isn't selected mid-flight.
 private struct CaretParagraph: View {
-    let base: AttributedString
+    let raw: String
+    let color: Color
     @State private var visible = true
 
-    private var caretRun: AttributedString {
-        var s = AttributedString(" ▌")
-        s.foregroundColor = visible ? Theme.accent : Theme.accent.opacity(0)
-        return s
-    }
-
     var body: some View {
-        (Text(base) + Text(caretRun))
-            .font(Theme.Typography.messageBody)
-            .lineSpacing(Theme.Typography.messageLineSpacing)
-            .foregroundStyle(Theme.textPrimary)
-            .tint(Theme.accent)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .task {
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .milliseconds(530))
-                    visible.toggle()
-                }
+        InlineMarkdownText(
+            raw: raw,
+            color: color,
+            caret: Text(verbatim: " ▌").foregroundStyle(visible ? Theme.accent : Theme.accent.opacity(0))
+        )
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(530))
+                visible.toggle()
             }
+        }
     }
 }
 
-// MARK: - Table fallback
+// MARK: - Tables
 
-/// A minimal GFM table: fixed-width columns in a horizontally scrollable grid.
-/// Not a full layout engine — just enough that a table reads as a table.
-private struct MarkdownTable: View {
-    let header: [AttributedString]
-    let rows: [[AttributedString]]
+/// A GFM table: each column as wide as its widest cell (up to a cap, past which
+/// cells wrap), in a horizontally scrollable card when it outgrows the screen.
+private struct MarkdownTableView: View {
+    let table: MarkdownTable<String>
 
     var body: some View {
+        let columns = table.header.count
         ScrollView(.horizontal, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
-                row(header, isHeader: true)
-                Rectangle().fill(Theme.hairline).frame(height: 0.5)
-                ForEach(Array(rows.enumerated()), id: \.offset) { idx, cells in
-                    row(cells, isHeader: false)
-                    if idx < rows.count - 1 {
-                        Rectangle().fill(Theme.hairline.opacity(0.5)).frame(height: 0.5)
+            TableLayout(columns: columns) {
+                ForEach(0..<columns, id: \.self) { column in
+                    cell(table.header[column], column: column, isHeader: true, isLastRow: table.rows.isEmpty)
+                }
+                ForEach(Array(table.rows.enumerated()), id: \.offset) { index, row in
+                    ForEach(0..<columns, id: \.self) { column in
+                        cell(row[column], column: column, isHeader: false, isLastRow: index == table.rows.count - 1)
                     }
                 }
             }
-            .background(Color(light: .black.opacity(0.05), dark: .black.opacity(0.18)), in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
+            .background(Theme.surfaceNested)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
             .hairlineBorder(Theme.Radius.sm)
+        }
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+    }
+
+    private func cell(_ raw: String, column: Int, isHeader: Bool, isLastRow: Bool) -> some View {
+        let alignment: TextAlignment = switch table.alignments[column] {
+        case .leading: .leading
+        case .center: .center
+        case .trailing: .trailing
+        }
+        return InlineMarkdownText(
+            raw: raw,
+            style: .compact,
+            font: isHeader ? .subheadline.weight(.semibold) : .subheadline,
+            color: isHeader ? Theme.textPrimary : Theme.textSecondary,
+            lineSpacing: 2,
+            alignment: alignment
+        )
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        // Fill the row's height, so the separator and header fill line up
+        // across cells of different heights.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(isHeader ? Theme.surface : Color.clear)
+        .overlay(alignment: .bottom) {
+            if !isLastRow {
+                Rectangle().fill(isHeader ? Theme.surfaceStroke : Theme.hairline).frame(height: 0.5)
+            }
+        }
+    }
+}
+
+/// Lays cells out row-major in `columns` columns: a column takes its widest
+/// cell's natural width (capped at `maxColumnWidth`, beyond which cells wrap),
+/// a row its tallest cell's height at those widths.
+private struct TableLayout: Layout {
+    let columns: Int
+    var minColumnWidth: CGFloat = 44
+    var maxColumnWidth: CGFloat = 240
+
+    struct Metrics {
+        var widths: [CGFloat] = []
+        var heights: [CGFloat] = []
+    }
+
+    func makeCache(subviews: Subviews) -> Metrics { Metrics() }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Metrics) -> CGSize {
+        cache = measure(subviews)
+        return CGSize(width: cache.widths.reduce(0, +), height: cache.heights.reduce(0, +))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Metrics) {
+        if cache.widths.count != columns { cache = measure(subviews) }
+        var y = bounds.minY
+        for (row, height) in cache.heights.enumerated() {
+            var x = bounds.minX
+            for column in 0..<columns {
+                let index = row * columns + column
+                guard index < subviews.count else { break }
+                subviews[index].place(
+                    at: CGPoint(x: x, y: y),
+                    anchor: .topLeading,
+                    proposal: ProposedViewSize(width: cache.widths[column], height: height)
+                )
+                x += cache.widths[column]
+            }
+            y += height
         }
     }
 
-    private func row(_ cells: [AttributedString], isHeader: Bool) -> some View {
-        HStack(alignment: .top, spacing: 0) {
-            ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
-                Text(cell)
-                    .font(.caption)
-                    .fontWeight(isHeader ? .semibold : .regular)
-                    .foregroundStyle(isHeader ? Theme.textPrimary : Theme.textSecondary)
-                    .frame(width: 130, alignment: .leading)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-            }
+    private func measure(_ subviews: Subviews) -> Metrics {
+        guard columns > 0 else { return Metrics() }
+        var widths = Array(repeating: minColumnWidth, count: columns)
+        for (index, subview) in subviews.enumerated() {
+            let natural = subview.sizeThatFits(.unspecified).width
+            widths[index % columns] = max(widths[index % columns], min(natural.rounded(.up), maxColumnWidth))
         }
+        var heights = Array(repeating: CGFloat(0), count: (subviews.count + columns - 1) / columns)
+        for (index, subview) in subviews.enumerated() {
+            let height = subview.sizeThatFits(ProposedViewSize(width: widths[index % columns], height: nil)).height
+            heights[index / columns] = max(heights[index / columns], height)
+        }
+        return Metrics(widths: widths, heights: heights)
     }
 }
 
@@ -232,181 +318,31 @@ private struct MarkdownTable: View {
 extension MarkdownContent {
     /// Parse into blocks, memoized per source string (block parsing is heavier
     /// than inline; the cache keeps recycled `List` rows free). Main-thread-only,
-    /// like `MarkdownText`'s cache.
-    static func blocks(for raw: String) -> [MarkdownBlock] {
-        if let hit = cache[raw] { return hit }
-        let parsed = parseBlocks(raw)
-        cache[raw] = parsed
-        order.append(raw)
+    /// like `InlineMarkdown`'s cache.
+    static func nodes(for raw: String, keepsIndentation: Bool = false) -> [MarkdownNode<String>] {
+        let key = CacheKey(raw: raw, keepsIndentation: keepsIndentation)
+        if let hit = cache[key] { return hit }
+        let parsed = parse(raw, keepsIndentation: keepsIndentation)
+        cache[key] = parsed
+        order.append(key)
         if order.count > limit {
-            let evicted = order.removeFirst()
-            cache.removeValue(forKey: evicted)
+            cache.removeValue(forKey: order.removeFirst())
         }
         return parsed
     }
 
-    private static var cache: [String: [MarkdownBlock]] = [:]
-    private static var order: [String] = []
+    /// Inline content stays raw here: it is rendered (and cached) per context
+    /// by `InlineMarkdown`, since a heading's code span takes the heading's size.
+    static func parse(_ raw: String, keepsIndentation: Bool = false) -> [MarkdownNode<String>] {
+        MarkdownParser.parse(raw, keepsIndentation: keepsIndentation, inline: { $0 })
+    }
+
+    private struct CacheKey: Hashable {
+        let raw: String
+        let keepsIndentation: Bool
+    }
+
+    private static var cache: [CacheKey: [MarkdownNode<String>]] = [:]
+    private static var order: [CacheKey] = []
     private static let limit = 300
-
-    static func parseBlocks(_ raw: String) -> [MarkdownBlock] {
-        let lines = raw.components(separatedBy: "\n")
-        var blocks: [MarkdownBlock] = []
-        var i = 0
-        func inline(_ s: String) -> AttributedString { MarkdownText.attributed(from: s) }
-
-        while i < lines.count {
-            let line = lines[i]
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-            // Fenced code block.
-            if let fence = fenceMarker(trimmed) {
-                let lang = String(trimmed.dropFirst(fence.count)).trimmingCharacters(in: .whitespaces)
-                var bodyLines: [String] = []
-                i += 1
-                while i < lines.count {
-                    let t = lines[i].trimmingCharacters(in: .whitespaces)
-                    if t.hasPrefix(fence), t.allSatisfy({ $0 == fence.first }) { i += 1; break }
-                    bodyLines.append(lines[i]); i += 1
-                }
-                blocks.append(.code(language: lang.isEmpty ? nil : lang, code: bodyLines.joined(separator: "\n")))
-                continue
-            }
-
-            if trimmed.isEmpty { i += 1; continue }
-
-            if let (level, rest) = heading(trimmed) {
-                blocks.append(.heading(level: level, inline(rest))); i += 1; continue
-            }
-
-            if isRule(trimmed) {
-                blocks.append(.rule); i += 1; continue
-            }
-
-            // Blockquote (consecutive `>` lines).
-            if trimmed.hasPrefix(">") {
-                var quoted: [String] = []
-                while i < lines.count {
-                    let t = lines[i].trimmingCharacters(in: .whitespaces)
-                    guard t.hasPrefix(">") else { break }
-                    quoted.append(String(t.dropFirst()).trimmingCharacters(in: .whitespaces))
-                    i += 1
-                }
-                blocks.append(.quote([inline(quoted.joined(separator: "\n"))]))
-                continue
-            }
-
-            // GFM table (header row + a `|---|` separator).
-            if i + 1 < lines.count, line.contains("|"), isTableSeparator(lines[i + 1]) {
-                let header = tableCells(line)
-                i += 2
-                var rows: [[String]] = []
-                while i < lines.count, lines[i].contains("|"),
-                      !lines[i].trimmingCharacters(in: .whitespaces).isEmpty {
-                    rows.append(tableCells(lines[i])); i += 1
-                }
-                blocks.append(.table(header: header.map(inline), rows: rows.map { $0.map(inline) }))
-                continue
-            }
-
-            // Bulleted list.
-            if bulletContent(trimmed) != nil {
-                var items: [String] = []
-                while i < lines.count {
-                    let t = lines[i].trimmingCharacters(in: .whitespaces)
-                    guard let c = bulletContent(t) else { break }
-                    items.append(c); i += 1
-                }
-                blocks.append(.bulletList(items.map(inline)))
-                continue
-            }
-
-            // Numbered list.
-            if orderedContent(trimmed) != nil {
-                var items: [(marker: String, content: AttributedString)] = []
-                while i < lines.count {
-                    let t = lines[i].trimmingCharacters(in: .whitespaces)
-                    guard let (m, c) = orderedContent(t) else { break }
-                    items.append((marker: m, content: inline(c))); i += 1
-                }
-                blocks.append(.numberedList(items))
-                continue
-            }
-
-            // Paragraph: gather until a blank line or the start of another block.
-            var para: [String] = []
-            while i < lines.count {
-                let l = lines[i]
-                let t = l.trimmingCharacters(in: .whitespaces)
-                if t.isEmpty { break }
-                if fenceMarker(t) != nil { break }
-                if heading(t) != nil { break }
-                if isRule(t) { break }
-                if t.hasPrefix(">") { break }
-                if bulletContent(t) != nil { break }
-                if orderedContent(t) != nil { break }
-                if i + 1 < lines.count, l.contains("|"), isTableSeparator(lines[i + 1]) { break }
-                para.append(l); i += 1
-            }
-            if !para.isEmpty { blocks.append(.paragraph(inline(para.joined(separator: "\n")))) }
-        }
-        return blocks
-    }
-
-    // MARK: line classifiers
-
-    private static func fenceMarker(_ trimmed: String) -> String? {
-        if trimmed.hasPrefix("```") { return "```" }
-        if trimmed.hasPrefix("~~~") { return "~~~" }
-        return nil
-    }
-
-    private static func heading(_ trimmed: String) -> (Int, String)? {
-        var n = 0
-        for ch in trimmed { if ch == "#" { n += 1 } else { break } }
-        guard (1...6).contains(n) else { return nil }
-        let rest = String(trimmed.dropFirst(n))
-        guard rest.isEmpty || rest.hasPrefix(" ") else { return nil }
-        return (n, rest.trimmingCharacters(in: .whitespaces))
-    }
-
-    private static func isRule(_ trimmed: String) -> Bool {
-        let s = trimmed.replacingOccurrences(of: " ", with: "")
-        guard s.count >= 3 else { return false }
-        return s.allSatisfy { $0 == "-" } || s.allSatisfy { $0 == "*" } || s.allSatisfy { $0 == "_" }
-    }
-
-    private static func bulletContent(_ trimmed: String) -> String? {
-        for p in ["- ", "* ", "+ "] where trimmed.hasPrefix(p) {
-            return String(trimmed.dropFirst(2))
-        }
-        return nil
-    }
-
-    private static func orderedContent(_ trimmed: String) -> (String, String)? {
-        var digits = ""
-        var idx = trimmed.startIndex
-        while idx < trimmed.endIndex, trimmed[idx].isNumber {
-            digits.append(trimmed[idx]); idx = trimmed.index(after: idx)
-        }
-        guard !digits.isEmpty, idx < trimmed.endIndex else { return nil }
-        let sep = trimmed[idx]
-        guard sep == "." || sep == ")" else { return nil }
-        let after = trimmed.index(after: idx)
-        guard after < trimmed.endIndex, trimmed[after] == " " else { return nil }
-        return (digits + ".", String(trimmed[trimmed.index(after: after)...]))
-    }
-
-    private static func isTableSeparator(_ line: String) -> Bool {
-        let t = line.trimmingCharacters(in: .whitespaces)
-        guard t.contains("-"), t.contains("|") else { return false }
-        return t.allSatisfy { $0 == "|" || $0 == "-" || $0 == ":" || $0 == " " }
-    }
-
-    private static func tableCells(_ line: String) -> [String] {
-        var t = line.trimmingCharacters(in: .whitespaces)
-        if t.hasPrefix("|") { t.removeFirst() }
-        if t.hasSuffix("|") { t.removeLast() }
-        return t.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
-    }
 }

@@ -30,6 +30,11 @@ enum Theme {
     /// An inset "sunken" surface for code blocks and diffs — darker than the
     /// backdrop in dark mode, a faint gray in light mode.
     static let codeSurface = Color(light: .black.opacity(0.045), dark: .black.opacity(0.30))
+    /// A fenced code block in a reply: a panel that reads as one in both modes
+    /// (the sunken `codeSurface` is near-invisible on the dark backdrop).
+    static let codeBlockSurface = Color(light: .black.opacity(0.04), dark: .white.opacity(0.06))
+    /// A block quote's left bar.
+    static let quoteBar = Color(light: .black.opacity(0.16), dark: .white.opacity(0.20))
     /// The transcript timeline's vertical spine. Deliberately a touch stronger
     /// than `hairline` so the continuous rail reads as a structural line rather
     /// than a separator that fades out.
@@ -119,8 +124,8 @@ enum Theme {
         /// Blockquote — same size as body, a touch tighter; color applied at site.
         static let quote: Font = .body
         static let quoteLineSpacing: CGFloat = 4
-        /// Fenced/console code in a reading context.
-        static let code: Font = .mono(13)
+        /// Fenced/console code in a reading context (13pt, scaled with Dynamic Type).
+        static let code: Font = .system(.footnote, design: .monospaced)
         static let codeLineSpacing: CGFloat = 2
         /// Heading scale — kept at the existing sizes (do not shrink); the fix is
         /// the added line spacing + consistent rhythm, not smaller headings.
@@ -133,6 +138,11 @@ enum Theme {
             }
         }
         static let headingLineSpacing: CGFloat = 3
+        /// Extra space above a heading that follows other blocks, on top of
+        /// `blockSpacing`, so a heading groups with the section it opens.
+        static func headingTopSpacing(_ level: Int) -> CGFloat {
+            level <= 2 ? 10 : 6
+        }
         /// Per-level heading weight. Major headings (h1/h2) are bold; minor ones
         /// (h3/h4) semibold, so the levels differ by *weight* as well as size.
         /// Previously every level was force-set to `.bold`, which collapsed h3/h4

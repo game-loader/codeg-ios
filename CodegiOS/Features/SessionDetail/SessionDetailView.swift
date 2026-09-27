@@ -24,6 +24,8 @@ struct SessionDetailView: View {
     @State private var renameText = ""
     @State private var showDetails = false
     @State private var showDeleteConfirm = false
+    /// A file a transcript link pointed at, shown in a preview sheet.
+    @State private var previewedFile: PreviewedFile?
 
     init(server: ServerProfile, client: CodegClient, conversationID: Int,
          onOpenSession: ((NewSessionRequest) -> Void)? = nil) {
@@ -53,6 +55,17 @@ struct SessionDetailView: View {
         ZStack {
             CodegBackground()
             content
+        }
+        .environment(\.openURL, OpenURLAction(handler: open(link:)))
+        .sheet(item: $previewedFile) { file in
+            NavigationStack {
+                FilePreviewView(client: client, rootPath: file.root, absPath: file.path)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { previewedFile = nil }
+                        }
+                    }
+            }
         }
         .navigationTitle(navTitle)
         .navigationBarTitleDisplayMode(.inline)
@@ -151,6 +164,31 @@ struct SessionDetailView: View {
             new != nil ? .warning : nil
         }
         .sensoryFeedback(.selection, trigger: model.userToggleTick)
+    }
+
+    /// Links in the transcript: a file opens in a preview sheet (when it lies
+    /// inside this session's folder, the only place the server reads from), a
+    /// session reference opens that conversation, a web link goes to the system.
+    private func open(link url: URL) -> OpenURLAction.Result {
+        switch url.scheme?.lowercased() {
+        case "codeg":
+            if url.host?.lowercased() == "session", let id = Int(url.lastPathComponent),
+               let conversation = URL(string: "codeg://conversation/\(id)") {
+                return .systemAction(conversation)
+            }
+            // Agent, commit, skill and pasted-attachment references open nothing.
+            return .handled
+        case "file", nil:
+            guard let root = model.folder?.path, let path = Reference.filePath(of: url) else { return .handled }
+            let absolute = PreviewedFile.normalized(path.hasPrefix("/") ? path : root + "/" + path)
+            let base = root.hasSuffix("/") ? root : root + "/"
+            if absolute.hasPrefix(base) {
+                previewedFile = PreviewedFile(root: root, path: absolute)
+            }
+            return .handled
+        default:
+            return .systemAction
+        }
     }
 
     private var content: some View {
@@ -471,5 +509,28 @@ private struct DetailRow: View {
                 .truncationMode(.middle)
         }
         .padding(.vertical, 10)
+    }
+}
+
+/// A file opened from a transcript link.
+private struct PreviewedFile: Identifiable {
+    let root: String
+    let path: String
+    var id: String { path }
+
+    /// `path` with `.` and `..` segments resolved. Not `standardizingPath`, which
+    /// consults the local file system (it rewrites `/private/…`); this path is
+    /// the server's.
+    static func normalized(_ path: String) -> String {
+        var parts: [Substring] = []
+        for part in path.split(separator: "/") {
+            if part == "." { continue }
+            if part == ".." {
+                if !parts.isEmpty { parts.removeLast() }
+                continue
+            }
+            parts.append(part)
+        }
+        return "/" + parts.joined(separator: "/")
     }
 }

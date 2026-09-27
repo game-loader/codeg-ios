@@ -191,14 +191,19 @@ enum FileIcon {
         let lower = name.lowercased()
         let ext = (lower as NSString).pathExtension
         switch ext {
-        case "swift", "rs", "go", "py", "rb", "java", "kt", "c", "h", "cpp", "cc",
-             "js", "jsx", "ts", "tsx", "sh", "bash", "zsh":
+        case "swift", "rs", "go", "py", "rb", "java", "kt", "c", "h", "cpp", "cc", "hpp",
+             "m", "mm", "cs", "php", "lua", "dart", "scala", "zig", "sql", "vue", "svelte",
+             "js", "jsx", "mjs", "cjs", "ts", "tsx", "sh", "bash", "zsh", "fish", "ps1":
             return "chevron.left.forwardslash.chevron.right"
         case "json", "yaml", "yml", "toml", "xml", "plist", "lock", "ini", "env", "cfg", "conf":
             return "gearshape"
-        case "md", "markdown", "txt", "rst", "adoc":
+        case "md", "markdown", "txt", "rst", "adoc", "log", "tex":
             return "doc.text"
-        case "png", "jpg", "jpeg", "gif", "svg", "webp", "heic", "bmp", "ico", "pdf":
+        case "pdf":
+            return "doc.richtext"
+        case "csv", "tsv", "xlsx", "xls":
+            return "tablecells"
+        case "png", "jpg", "jpeg", "gif", "svg", "webp", "heic", "bmp", "ico":
             return "photo"
         case "zip", "tar", "gz", "tgz", "bz2", "xz", "7z", "rar":
             return "shippingbox"
