@@ -236,7 +236,7 @@ struct MachineStatusLabel: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            StatusDot(color: status.color, hollow: status == .notProbed)
+            IndicatorDot(color: status.color, hollow: status == .notProbed)
             Text(status.title)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(Theme.textSecondary)

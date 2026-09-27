@@ -451,7 +451,7 @@ struct PaperStatusLabel: View {
             if status.isBusy {
                 ProgressView().controlSize(.mini)
             } else {
-                StatusDot(color: color)
+                IndicatorDot(color: color)
             }
             Text(title)
                 .font(.caption.weight(.semibold))

@@ -11,7 +11,7 @@ struct NoticeCard<Accessory: View>: View {
     @ViewBuilder var accessory: () -> Accessory
 
     init(tone: Tone, title: LocalizedStringKey? = nil, message: String,
-         @ViewBuilder accessory: @escaping () -> Accessory = { EmptyView() }) {
+         @ViewBuilder accessory: @escaping () -> Accessory) {
         self.tone = tone
         self.title = title
         self.message = message
@@ -62,8 +62,14 @@ struct NoticeCard<Accessory: View>: View {
     }
 }
 
+extension NoticeCard where Accessory == EmptyView {
+    init(tone: Tone, title: LocalizedStringKey? = nil, message: String) {
+        self.init(tone: tone, title: title, message: message) { EmptyView() }
+    }
+}
+
 /// A small filled (or hollow, for "unknown") status dot.
-struct StatusDot: View {
+struct IndicatorDot: View {
     let color: Color
     var hollow = false
 
