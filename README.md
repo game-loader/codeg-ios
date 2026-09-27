@@ -106,6 +106,40 @@ text is saved to `build/release-notes-vX.Y.Z.txt` for you to paste into App
 Store Connect. To automate that text too, graduate `--archive` to Fastlane
 [`deliver`](https://docs.fastlane.tools/actions/deliver/).
 
+### Unsigned IPA for sideloading
+
+Push a `v*` tag to run the **Unsigned IPA release** workflow on macOS with
+Xcode 26 or newer. Tags pushed by `scripts/release.sh` also get an IPA attached
+automatically; existing release titles and notes are preserved.
+
+Once the workflow exists on the repository's default branch, you can also use
+**Actions → Unsigned IPA release → Run workflow**, or:
+
+```bash
+gh workflow run ipa-release.yml --ref <branch> -f tag=v1.0.1-sideload.test -f bundle_id=com.gameloader.codeg
+```
+
+The tag trigger works from the tagged commit even before the workflow reaches
+the default branch. Manual runs build the selected ref; an empty `tag` creates
+`v<MARKETING_VERSION>-sideload.<run_number>`, and an existing `tag` must already
+point at the commit being built. Manual releases default to
+prerelease (`prerelease=false` overrides this); tag pushes are prereleases only
+when the tag contains `-`. These settings apply when creating a release.
+Leave `xcode_version` empty to use the runner's default, or select an installed
+Xcode version.
+
+Download `Codeg-<tag>-unsigned.ipa` and its `.ipa.sha256` checksum from the
+GitHub Release, or the workflow's artifact (retained for 7 days, including when
+publishing fails). The build needs no signing certificates, provisioning
+profiles or secrets beyond `GITHUB_TOKEN`. It is unsigned: install it with
+**Sideloadly, AltStore or SideStore**, which re-sign it with your Apple ID and
+may rewrite the bundle identifier. Free Apple ID signing expires after
+**7 days** (refresh or re-sign), with at most **3 active sideloaded apps**.
+
+The bundle identifier defaults to `com.gameloader.codeg`. Override it with the
+`bundle_id` dispatch input or the `CODEG_BUNDLE_IDENTIFIER` repository variable
+(the input takes precedence).
+
 ## Connecting to a server
 
 1. Start a codeg server (`CODEG_PORT` default `3080`). It prints a `CODEG_TOKEN`

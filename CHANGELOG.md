@@ -12,6 +12,8 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- GitHub Actions builds unsigned sideloading IPAs and attaches them with SHA-256
+  checksums to releases, with tag and manual triggers.
 - **New agent types** — DeepSeek Harness, Qoder, and Google Antigravity, plus
   registry (`custom:…`) agents. Unknown agent types used to be read as Claude
   Code (and shown and reconnected as such); they now keep their own identity.

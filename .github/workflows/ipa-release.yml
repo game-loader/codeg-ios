@@ -1,0 +1,319 @@
+name: Unsigned IPA release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (empty creates a unique sideload tag)
+        type: string
+        required: false
+      bundle_id:
+        description: Bundle identifier (overrides the repository variable)
+        type: string
+        required: false
+      prerelease:
+        description: Mark a newly created release as a prerelease
+        type: boolean
+        default: true
+      xcode_version:
+        description: Installed Xcode version (empty uses the runner default)
+        type: string
+        required: false
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.metadata.outputs.tag }}
+      bundle_id: ${{ steps.metadata.outputs.bundle_id }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
+      version: ${{ steps.metadata.outputs.version }}
+      build_number: ${{ steps.metadata.outputs.build_number }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Resolve and validate release inputs
+        id: metadata
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_BUNDLE_ID: ${{ inputs.bundle_id }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+          REPOSITORY_BUNDLE_ID: ${{ vars.CODEG_BUNDLE_IDENTIFIER }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -nE 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"([^"]+)"[[:space:]]*$/\1/p' project.yml)
+          BUILD_NUMBER=$(sed -nE 's/^[[:space:]]*CURRENT_PROJECT_VERSION:[[:space:]]*"([^"]+)"[[:space:]]*$/\1/p' project.yml)
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo '::error::Cannot read the version and build number from project.yml.'
+            exit 1
+          fi
+
+          if [[ "$EVENT_NAME" == push ]]; then
+            TAG=$REF_NAME
+          else
+            TAG=${INPUT_TAG:-v${VERSION}-sideload.${RUN_NUMBER}}
+          fi
+          if [[ ! "$TAG" =~ ^v[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || ! git check-ref-format "refs/tags/$TAG"; then
+            echo '::error::Invalid tag: use a valid Git tag starting with v, followed by letters, digits, dots, underscores, + or - (no spaces or slashes).'
+            exit 1
+          fi
+          # An existing tag stays where it is, so this build would be attached to
+          # a release for a different commit.
+          if [[ "$EVENT_NAME" == workflow_dispatch ]] &&
+            TAG_COMMIT=$(gh api "repos/$GH_REPO/commits/refs/tags/$TAG" --jq .sha 2>/dev/null) &&
+            [[ "$TAG_COMMIT" != "$GITHUB_SHA" ]]; then
+            echo "::error::Tag $TAG already points at ${TAG_COMMIT:0:7}, not ${GITHUB_SHA:0:7}; choose a new tag or run from that commit."
+            exit 1
+          fi
+
+          if [[ "$EVENT_NAME" == push ]]; then
+            PRERELEASE=false
+            if [[ "$TAG" == *-* ]]; then PRERELEASE=true; fi
+            if [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-.*)?$ && "${BASH_REMATCH[1]}" != "$VERSION" ]]; then
+              echo "::warning::Tag $TAG differs from MARKETING_VERSION $VERSION; the app keeps the project.yml version."
+            fi
+          else
+            PRERELEASE=$INPUT_PRERELEASE
+            if [[ "$PRERELEASE" != true && "$PRERELEASE" != false ]]; then
+              echo '::error::The prerelease input must be true or false.'
+              exit 1
+            fi
+          fi
+
+          BUNDLE_ID=${REPOSITORY_BUNDLE_ID:-com.gameloader.codeg}
+          if [[ "$EVENT_NAME" == workflow_dispatch && -n "$INPUT_BUNDLE_ID" ]]; then
+            BUNDLE_ID=$INPUT_BUNDLE_ID
+          fi
+          if [[ ! "$BUNDLE_ID" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]; then
+            echo '::error::Invalid bundle identifier: use dot-separated letters, digits or hyphens, with at least two components.'
+            exit 1
+          fi
+          printf 'Tag: %s; bundle ID: %s; version: %s (%s); prerelease: %s\n' \
+            "$TAG" "$BUNDLE_ID" "$VERSION" "$BUILD_NUMBER" "$PRERELEASE"
+          {
+            printf 'tag=%s\n' "$TAG"
+            printf 'bundle_id=%s\n' "$BUNDLE_ID"
+            printf 'prerelease=%s\n' "$PRERELEASE"
+            printf 'version=%s\n' "$VERSION"
+            printf 'build_number=%s\n' "$BUILD_NUMBER"
+          } >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: prepare
+    runs-on: macos-26
+    timeout-minutes: 45
+    # Resolve generated dispatch tags before taking the same lock as tag pushes.
+    concurrency:
+      group: ipa-release-${{ needs.prepare.outputs.tag }}
+      cancel-in-progress: false
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      BUNDLE_ID: ${{ needs.prepare.outputs.bundle_id }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Select Xcode
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.xcode_version != '' }}
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '${{ inputs.xcode_version }}'
+
+      - name: Check Xcode and device SDK
+        id: toolchain
+        run: |
+          set -euo pipefail
+          XCODE_INFO=$(xcodebuild -version)
+          printf '%s\n' "$XCODE_INFO"
+          XCODE_VERSION=$(printf '%s\n' "$XCODE_INFO" | awk '/^Xcode / { print $2; exit }')
+          XCODE_MAJOR=${XCODE_VERSION%%.*}
+          if [[ ! "$XCODE_MAJOR" =~ ^[0-9]+$ ]] || [[ "$XCODE_MAJOR" -lt 26 ]]; then
+            echo '::error::Xcode 26 or newer is required.'
+            exit 1
+          fi
+          if ! SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version); then
+            echo '::error::The selected Xcode has no usable iPhoneOS SDK.'
+            exit 1
+          fi
+          printf 'iPhoneOS SDK: %s\n' "$SDK_VERSION"
+          SDK_MAJOR=${SDK_VERSION%%.*}
+          if [[ ! "$SDK_MAJOR" =~ ^[0-9]+$ ]] || [[ "$SDK_MAJOR" -lt 26 ]]; then
+            echo '::error::The iOS 26 SDK or newer is required.'
+            exit 1
+          fi
+          printf 'xcode=%s\nsdk=%s\n' "$XCODE_VERSION" "$SDK_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install XcodeGen 2.46.0 and generate project
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/xcodegen"
+          curl --fail --location --silent --show-error --retry 3 \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip \
+            -o "$RUNNER_TEMP/xcodegen.zip"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP/xcodegen"
+          XCODEGEN=$(find "$RUNNER_TEMP/xcodegen" -type f -name xcodegen)
+          if [[ ! -x "$XCODEGEN" ]]; then
+            echo '::error::The XcodeGen download did not contain a single executable named xcodegen.'
+            exit 1
+          fi
+          "$XCODEGEN" --version
+          "$XCODEGEN" generate
+
+      - name: Archive unsigned app
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          xcodebuild archive \
+            -project CodegiOS.xcodeproj -scheme CodegiOS -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$PWD/build/Codeg.xcarchive" \
+            -derivedDataPath "$PWD/build/DerivedData" \
+            -skipMacroValidation -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
+            DEVELOPMENT_TEAM= CODEG_DEVELOPMENT_TEAM= \
+            "CODEG_BUNDLE_IDENTIFIER=$BUNDLE_ID" \
+            2>&1 | tee build/xcodebuild.log | xcbeautify
+
+      - name: Validate and package IPA
+        id: package
+        run: |
+          set -euo pipefail
+          APP=build/Codeg.xcarchive/Products/Applications/Codeg.app
+          if [[ ! -d "$APP" || ! -f "$APP/Info.plist" ]]; then
+            echo '::error::The archive does not contain Products/Applications/Codeg.app and its Info.plist.'
+            exit 1
+          fi
+          EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")
+          if [[ -z "$EXECUTABLE" || ! -f "$APP/$EXECUTABLE" || ! -x "$APP/$EXECUTABLE" ]]; then
+            echo '::error::The archived app executable is missing or not executable.'
+            exit 1
+          fi
+          ACTUAL_BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")
+          if [[ "$ACTUAL_BUNDLE_ID" != "$BUNDLE_ID" ]]; then
+            echo '::error::The archived bundle identifier does not match the requested identifier.'
+            exit 1
+          fi
+          APP_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
+          APP_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
+          MINIMUM_OS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist")
+          printf 'CFBundleShortVersionString: %s\nCFBundleVersion: %s\nMinimumOSVersion: %s\n' \
+            "$APP_VERSION" "$APP_BUILD" "$MINIMUM_OS"
+          if [[ "$APP_VERSION" != "$VERSION" || "$APP_BUILD" != "$BUILD_NUMBER" ]]; then
+            echo '::error::The archived app version does not match project.yml.'
+            exit 1
+          fi
+          mkdir -p build/package/Payload build/export
+          ditto --norsrc --noextattr --noacl "$APP" build/package/Payload/Codeg.app
+          IPA=Codeg-${TAG}-unsigned.ipa
+          (
+            cd build/package
+            COPYFILE_DISABLE=1 zip -qry "../export/$IPA" Payload \
+              -x '*.DS_Store' '*/__MACOSX/*' '*/._*'
+          )
+          unzip -l "build/export/$IPA" | tee build/ipa-contents.txt
+          if ! grep -Eq '[[:space:]]Payload/Codeg\.app/Info\.plist$' build/ipa-contents.txt; then
+            echo '::error::The IPA does not contain Payload/Codeg.app/Info.plist.'
+            exit 1
+          fi
+          (cd build/export && shasum -a 256 "$IPA" > "$IPA.sha256")
+          printf 'ipa=build/export/%s\n' "$IPA" >> "$GITHUB_OUTPUT"
+
+      - name: Save IPA and checksum
+        uses: actions/upload-artifact@v7
+        with:
+          name: Codeg-${{ needs.prepare.outputs.tag }}-unsigned
+          path: |
+            build/export/*.ipa
+            build/export/*.ipa.sha256
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          IPA_PATH: ${{ steps.package.outputs.ipa }}
+          XCODE_VERSION: ${{ steps.toolchain.outputs.xcode }}
+          SDK_VERSION: ${{ steps.toolchain.outputs.sdk }}
+        run: |
+          set -euo pipefail
+          NOTES_SECTION=Unreleased
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then NOTES_SECTION=${TAG#v}; fi
+          CHANGELOG_BODY=
+          if [[ -f CHANGELOG.md ]]; then
+            CHANGELOG_BODY=$(awk -v wanted="$NOTES_SECTION" '
+              { sub(/\r$/, "") }
+              /^##[[:space:]]+\[/ {
+                section = $0
+                sub(/^##[[:space:]]+\[/, "", section)
+                sub(/\].*$/, "", section)
+                if (section == wanted) found = 1
+                next
+              }
+              /^##[[:space:]]/ { section = ""; next }
+              section == wanted { selected = selected $0 ORS }
+              section == "Unreleased" { unreleased = unreleased $0 ORS }
+              END { printf "%s", found ? selected : unreleased }
+            ' CHANGELOG.md)
+          fi
+          {
+            printf -- '- Commit: %s\n- Bundle ID: %s\n' "${GITHUB_SHA:0:7}" "$BUNDLE_ID"
+            printf -- '- Version: %s (%s)\n- Xcode: %s; iOS SDK: %s\n' \
+              "$VERSION" "$BUILD_NUMBER" "$XCODE_VERSION" "$SDK_VERSION"
+            printf '\n## Install\n\n'
+            printf '%s\n' \
+              'This build is unsigned. Install it with Sideloadly, AltStore or SideStore, which re-sign it with your Apple ID and may rewrite the bundle ID.' \
+              'Free Apple ID signing expires after 7 days (refresh or re-sign), with at most 3 active sideloaded apps.'
+            if [[ "$CHANGELOG_BODY" =~ [^[:space:]] ]]; then
+              printf '\n## Changelog\n%s\n' "$CHANGELOG_BODY"
+            fi
+          } > build/release-notes.md
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$IPA_PATH" "$IPA_PATH.sha256" --clobber
+          else
+            CREATE_ARGS=("$TAG" "$IPA_PATH" "$IPA_PATH.sha256" --target "$GITHUB_SHA" --title "$TAG" --notes-file build/release-notes.md)
+            if [[ "$PRERELEASE" == true ]]; then CREATE_ARGS+=(--prerelease); fi
+            # Tags created with GITHUB_TOKEN do not trigger another workflow run.
+            if ! gh release create "${CREATE_ARGS[@]}"; then
+              # release.sh (or another publisher) may have won the creation race.
+              if gh release view "$TAG" >/dev/null 2>&1; then
+                gh release upload "$TAG" "$IPA_PATH" "$IPA_PATH.sha256" --clobber
+              else
+                echo '::error::Release creation failed and no release exists to receive the IPA.'
+                exit 1
+              fi
+            fi
+          fi
+
+      - name: Save raw build log on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: xcodebuild-log-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/xcodebuild.log
+          retention-days: 7
+          if-no-files-found: ignore
