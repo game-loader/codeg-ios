@@ -1,6 +1,46 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Delegate to Agent" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "委派给 Agent"
+          }
+        }
+      }
+    },
+    "Choose an agent, describe its task, then send. Delegation must be enabled in Settings → General." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择 Agent，填写它的任务后发送。请先在“设置 → 通用”中启用委派。"
+          }
+        }
+      }
+    },
+    "Not available on this server" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此服务器上暂不可用"
+          }
+        }
+      }
+    },
+    "No enabled agents. Enable an agent in Settings → Agents." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有已启用的 Agent。请前往“设置 → 智能体”启用。"
+          }
+        }
+      }
+    },
     "Cursor Configuration" : {
       "localizations" : {
         "zh-Hans" : {

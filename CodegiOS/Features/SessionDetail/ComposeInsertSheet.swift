@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The "+" menu's insert picker: a searchable list for one of Quick Messages /
+/// The "+" menu's insert picker: a searchable list for Agents / Quick Messages /
 /// Expert Skills / Slash Commands. Selecting a row emits a pure draft transform
 /// (`onInsert`) the compose bar applies to its text, then dismisses — mirroring
 /// the web add-menu's submenus.
@@ -54,6 +54,17 @@ struct ComposeInsertSheet: View {
     private var list: some View {
         List {
             switch source {
+            case .agents:
+                Section {
+                    let items = filteredAgents
+                    if items.isEmpty { noMatchesRow } else {
+                        ForEach(items) { agent in
+                            agentRow(agent)
+                        }
+                    }
+                } footer: {
+                    Text("Choose an agent, describe its task, then send. Delegation must be enabled in Settings → General.")
+                }
             case .quickMessages:
                 let items = filteredQuickMessages
                 if items.isEmpty { noMatchesRow } else {
@@ -98,6 +109,40 @@ struct ComposeInsertSheet: View {
     }
 
     // MARK: - Row
+
+    private func agentRow(_ agent: AcpAgentInfo) -> some View {
+        Button {
+            onInsert { model.draftAppendingAgent(agent, to: $0) }
+            dismiss()
+        } label: {
+            HStack(spacing: 12) {
+                AgentAvatar(agent: agent.agentType, size: 32)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(verbatim: "@" + (agent.name.isEmpty ? agent.agentType.displayName : agent.name))
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(Theme.textPrimary)
+                    if !agent.description.isEmpty {
+                        Text(verbatim: agent.description)
+                            .font(.caption)
+                            .foregroundStyle(Theme.textSecondary)
+                            .lineLimit(2)
+                    }
+                    if !agent.available {
+                        Text("Not available on this server")
+                            .font(.caption)
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .multilineTextAlignment(.leading)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(Color.clear)
+        .listRowSeparatorTint(Theme.hairline)
+    }
 
     @ViewBuilder
     private func row(title: String, subtitle: String?, token: String?, monospacedTitle: Bool = false, action: @escaping () -> Void) -> some View {
@@ -159,6 +204,7 @@ struct ComposeInsertSheet: View {
 
     private var emptyMessage: LocalizedStringKey {
         switch source {
+        case .agents: return "No enabled agents. Enable an agent in Settings → Agents."
         case .quickMessages: return "No quick messages yet. Create them on the codeg web app."
         case .experts: return "No experts are linked to this agent."
         case .slashCommands: return "No slash commands yet — they appear once the session is active."
@@ -189,6 +235,17 @@ struct ComposeInsertSheet: View {
     // MARK: - Filtering
 
     private var query: String { search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+
+    private var filteredAgents: [AcpAgentInfo] {
+        let agentQuery = query.hasPrefix("@") ? String(query.dropFirst()) : query
+        guard !agentQuery.isEmpty else { return model.agents }
+        return model.agents.filter {
+            let name = $0.name.isEmpty ? $0.agentType.displayName : $0.name
+            return name.lowercased().contains(agentQuery)
+                || $0.agentType.rawValue.lowercased().contains(agentQuery)
+                || $0.description.lowercased().contains(agentQuery)
+        }
+    }
 
     private var filteredQuickMessages: [QuickMessage] {
         guard !query.isEmpty else { return model.quickMessages }

@@ -26,6 +26,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Check agent mention routing and draft preservation
+        run: |
+          set -euo pipefail
+          swiftc CodegiOS/Models/AgentMentionReference.swift scripts/test-agent-mentions.swift \
+            -o "$RUNNER_TEMP/test-agent-mentions"
+          "$RUNNER_TEMP/test-agent-mentions"
+
       - name: Install XcodeGen 2.46.0 and generate project
         run: |
           set -euo pipefail

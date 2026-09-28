@@ -1,8 +1,8 @@
 import SwiftUI
 import Observation
 
-/// Backs the compose-bar "+" menu's three insert sources — Quick Messages,
-/// Expert Skills, and Slash Commands — mirroring the web client's add-menu
+/// Backs the compose-bar "+" menu's insert sources — Agent Mentions, Quick
+/// Messages, Expert Skills, and Slash Commands — mirroring the web composer
 /// (`message-input.tsx`). Loading is on demand (when a picker sheet opens) via
 /// closures the owner wires to `CodegClient`; selecting an item produces a pure
 /// draft transform applied by the compose bar.
@@ -10,13 +10,14 @@ import Observation
 @Observable
 final class ComposeInsertModel {
 
-    /// The three text-insert sources in the "+" menu.
+    /// The text-insert sources in the "+" menu.
     enum Source: String, Identifiable, CaseIterable {
-        case quickMessages, experts, slashCommands
+        case agents, quickMessages, experts, slashCommands
         var id: String { rawValue }
 
         var title: LocalizedStringKey {
             switch self {
+            case .agents: return "Delegate to Agent"
             case .quickMessages: return "Quick Messages"
             case .experts: return "Expert Skills"
             case .slashCommands: return "Slash Commands"
@@ -24,6 +25,7 @@ final class ComposeInsertModel {
         }
         var systemImage: String {
             switch self {
+            case .agents: return "at"
             case .quickMessages: return "text.bubble"
             case .experts: return "sparkles"
             case .slashCommands: return "slash.circle"
@@ -38,6 +40,7 @@ final class ComposeInsertModel {
     var agentType: AgentType = .claudeCode
 
     // Loaders injected by the owner (wired to the client + this conversation).
+    var loadAgentsAction: (() async throws -> [AcpAgentInfo])?
     var loadQuickMessagesAction: (() async throws -> [QuickMessage])?
     var loadExpertsAction: (() async throws -> [ExpertListItem])?
     /// The GLOBAL built-in expert catalog (`experts_list`), used only to build the
@@ -45,6 +48,7 @@ final class ComposeInsertModel {
     var loadBuiltInExpertsAction: (() async throws -> [ExpertListItem])?
     var loadCommandsAction: (() async throws -> [AvailableCommandInfo])?
 
+    private(set) var agents: [AcpAgentInfo] = []
     private(set) var quickMessages: [QuickMessage] = []
     private(set) var experts: [ExpertListItem] = []
     private(set) var commands: [AvailableCommandInfo] = []
@@ -73,6 +77,7 @@ final class ComposeInsertModel {
     /// True when a source has loaded and produced no items (drives an empty state).
     func isEmpty(_ source: Source) -> Bool {
         switch source {
+        case .agents: return agents.isEmpty
         case .quickMessages: return quickMessages.isEmpty
         case .experts: return experts.isEmpty
         case .slashCommands: return visibleCommands.isEmpty
@@ -98,6 +103,14 @@ final class ComposeInsertModel {
             guard let self else { return }
             do {
                 switch source {
+                case .agents:
+                    let list = try await (self.loadAgentsAction?() ?? [])
+                    if Task.isCancelled { return }
+                    // Match desktop @ suggestions: enabled agents, including
+                    // custom types; availability is informational, not a filter.
+                    self.agents = list.filter { $0.enabled }.sorted {
+                        ($0.sortOrder, $0.id) < ($1.sortOrder, $1.id)
+                    }
                 case .quickMessages:
                     let list = try await (self.loadQuickMessagesAction?() ?? [])
                     if Task.isCancelled { return }
@@ -157,6 +170,13 @@ final class ComposeInsertModel {
     }
 
     // MARK: - Insertion (pure draft transforms)
+
+    /// The visible link is the same routing anchor desktop sends. Preserve the
+    /// wire type (including custom:<id>) instead of routing by the display name.
+    func draftAppendingAgent(_ agent: AcpAgentInfo, to draft: String) -> String {
+        let name = agent.name.isEmpty ? agent.agentType.displayName : agent.name
+        return AgentMentionReference.appending(name: name, agentType: agent.agentType.rawValue, to: draft)
+    }
 
     /// The expert-mention prefix for the current agent (`$` for Codex, `/` else),
     /// matching the web's `expertPrefix`.

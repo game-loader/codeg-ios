@@ -115,6 +115,7 @@ struct ComposeBar: View {
         .sheet(item: $presentedInsert) { source in
             ComposeInsertSheet(source: source, model: insertModel) { transform in
                 text = transform(text)
+                focused = true
             }
         }
         .sheet(isPresented: $showMachinePicker) {
@@ -154,7 +155,7 @@ struct ComposeBar: View {
                 }
                 .disabled(!canAttachMore)
             }
-            // Insert text: quick messages, expert mentions, slash commands.
+            // Insert text: agent mentions, quick messages, experts, commands.
             Section("Insert") {
                 ForEach(ComposeInsertModel.Source.allCases) { source in
                     Button { presentedInsert = source } label: {

@@ -241,9 +241,13 @@ final class SessionDetailViewModel {
             return try await self.client.sessionSnapshot(conversationId: id)
         }
 
-        // Quick messages + experts are connection-independent catalog reads.
+        // Agents, quick messages + experts are connection-independent catalog reads.
         // Slash commands come from the cheap by-conversation snapshot (empty until
         // a connection binds — no agent is spawned to list them).
+        insertModel.loadAgentsAction = { [weak self] in
+            guard let self else { return [] }
+            return try await self.client.listAgents()
+        }
         insertModel.loadQuickMessagesAction = { [weak self] in
             guard let self else { return [] }
             return try await self.client.quickMessages()
