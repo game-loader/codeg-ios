@@ -1,6 +1,16 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "The PDF path is not inside its folder." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "PDF 路径不在指定文件夹内。"
+          }
+        }
+      }
+    },
     "Share PDF" : {
       "localizations" : {
         "zh-Hans" : {

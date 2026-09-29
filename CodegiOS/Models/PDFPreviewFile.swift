@@ -4,6 +4,48 @@ import PDFKit
 enum PDFPreviewError: Error, Equatable {
     case tooLarge
     case invalidData
+    case invalidPath
+}
+
+/// Server paths must use the server's separators, not iOS's path semantics.
+/// Normalize only absolute Windows paths; backslashes in POSIX names are literal.
+enum PDFServerPath {
+    private static func normalized(_ path: String) -> String {
+        let drivePath = path.range(of: #"^[A-Za-z]:[\\/]"#, options: .regularExpression) != nil
+        if drivePath || path.hasPrefix("\\\\") {
+            return path.replacingOccurrences(of: "\\", with: "/")
+        }
+        return path
+    }
+
+    static func name(_ path: String) -> String {
+        let path = normalized(path)
+        guard let separator = path.lastIndex(of: "/") else { return path }
+        return String(path[path.index(after: separator)...])
+    }
+
+    static func directory(_ path: String) -> String {
+        let path = normalized(path)
+        guard let separator = path.lastIndex(of: "/") else { return "." }
+        let parent = String(path[..<separator])
+        if parent.isEmpty { return "/" }
+        if parent.range(of: #"^[A-Za-z]:$"#, options: .regularExpression) != nil {
+            return parent + "/"
+        }
+        return parent
+    }
+
+    static func relative(_ path: String, to root: String) throws -> String {
+        let path = normalized(path)
+        let root = normalized(root)
+        guard !root.isEmpty else { throw PDFPreviewError.invalidPath }
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        guard path.hasPrefix(prefix) else { throw PDFPreviewError.invalidPath }
+        let relative = String(path.dropFirst(prefix.count))
+        guard !relative.isEmpty, !relative.hasPrefix("/"),
+              !relative.split(separator: "/").contains("..") else { throw PDFPreviewError.invalidPath }
+        return relative
+    }
 }
 
 /// Owns one bounded, local copy of a server PDF. Reading and sharing retain the

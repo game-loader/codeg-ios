@@ -35,6 +35,20 @@ struct PDFPreviewChecks {
     }
 
     static func main() async throws {
+        check(try PDFServerPath.relative("/repo/docs/论文.pdf", to: "/repo") == "docs/论文.pdf",
+              "Nested PDFs stay relative to the project root")
+        check(PDFServerPath.directory("/paper.pdf") == "/", "POSIX root is preserved")
+        check(PDFServerPath.directory(#"C:\paper.pdf"#) == "C:/", "Windows drive root is absolute")
+        check(try PDFServerPath.relative(#"C:\repo\docs\paper.pdf"#, to: "C:/repo") == "docs/paper.pdf",
+              "Windows server paths produce relative requests on iOS")
+        let unc = #"\\server\share\papers\report.PDF"#
+        check(PDFServerPath.name(unc) == "report.PDF" && PDFServerPath.directory(unc) == "//server/share/papers",
+              "UNC prefixes survive Academic link routing")
+        check(try PDFServerPath.relative(unc, to: #"\\server\share"#) == "papers/report.PDF", "UNC relative path")
+        check(PDFServerPath.name(#"/repo/back\slash.pdf"#) == #"back\slash.pdf"#, "Preserve POSIX backslashes")
+        for path in ["/other/paper.pdf", "/repo-other/paper.pdf", "/repo/../private.pdf", "/repo//paper.pdf"] {
+            expect(.invalidPath) { _ = try PDFServerPath.relative(path, to: "/repo") }
+        }
         check(PDFPreviewFile.matches("/project/报告.PdF"), "Case-insensitive PDF routing")
         for path in ["image.png", "note.md", "report.pdf.txt", "/folder.pdf/image.jpg"] {
             check(!PDFPreviewFile.matches(path), "Do not route images or text to PDFKit")

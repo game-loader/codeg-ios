@@ -17,7 +17,7 @@ struct WorkspacePDFPreviewView: View {
     @State private var retry = 0
     @Environment(\.locale) private var locale
 
-    private var name: String { (absPath as NSString).lastPathComponent }
+    private var name: String { PDFServerPath.name(absPath) }
     private struct LoadID: Hashable {
         let server: URL
         let root: String
@@ -70,7 +70,7 @@ struct WorkspacePDFPreviewView: View {
         file = nil
         defer { if !Task.isCancelled { isLoading = false } }
         do {
-            let relative = FolderPaths.relative(absPath, to: rootPath)
+            let relative = try PDFServerPath.relative(absPath, to: rootPath)
             let encoded = try await client.readWorkspaceFileBase64(
                 rootPath: rootPath, path: relative, maxBytes: PDFPreviewFile.maxBytes
             )
@@ -96,6 +96,8 @@ struct WorkspacePDFPreviewView: View {
                     self.error = String(localized: "PDF is too large to preview (maximum 20 MB).", locale: locale)
                 case .invalidData:
                     self.error = String(localized: "This PDF is damaged or could not be opened.", locale: locale)
+                case .invalidPath:
+                    self.error = String(localized: "The PDF path is not inside its folder.", locale: locale)
                 }
             } else if let apiError = error as? APIError,
                       case let .server(_, code, message, _) = apiError,

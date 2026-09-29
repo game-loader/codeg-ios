@@ -375,7 +375,7 @@ struct PaperDetailView: View {
                         NavigationLink {
                             WorkspacePDFPreviewView(
                                 client: client,
-                                rootPath: (pdf as NSString).deletingLastPathComponent,
+                                rootPath: PDFServerPath.directory(pdf),
                                 absPath: pdf
                             )
                         } label: {
@@ -383,7 +383,7 @@ struct PaperDetailView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Label("Open PDF", systemImage: "doc.richtext")
                                         .foregroundStyle(Theme.accent)
-                                    Text(verbatim: (pdf as NSString).lastPathComponent)
+                                    Text(verbatim: pdf)
                                         .font(.caption.monospaced())
                                         .foregroundStyle(Theme.textSecondary)
                                         .lineLimit(2)
