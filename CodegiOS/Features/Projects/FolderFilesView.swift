@@ -123,8 +123,6 @@ struct FolderFilesView: View {
     private func destination(for item: DirectoryItem) -> some View {
         if item.isDir {
             FolderFilesView(client: client, rootPath: rootPath, dirPath: item.path)
-        } else if PDFPreviewFile.matches(item.path) {
-            WorkspacePDFPreviewView(client: client, rootPath: rootPath, absPath: item.path)
         } else {
             FilePreviewView(client: client, rootPath: rootPath, absPath: item.path)
         }
@@ -228,9 +226,25 @@ enum FileIcon {
 
 // MARK: - File preview
 
-/// A read-only file viewer. Raster images use a bounded binary read; other files
-/// use the text endpoint and its monospaced, line-numbered code surface.
+/// Shared routing for Files, chat file links, and untracked changes. PDFs must
+/// never reach the text endpoint, regardless of where preview was opened.
 struct FilePreviewView: View {
+    let client: CodegClient
+    let rootPath: String
+    let absPath: String
+
+    var body: some View {
+        if PDFPreviewFile.matches(absPath) {
+            WorkspacePDFPreviewView(client: client, rootPath: rootPath, absPath: absPath)
+        } else {
+            ImageOrTextFilePreviewView(client: client, rootPath: rootPath, absPath: absPath)
+        }
+    }
+}
+
+/// Raster images use a bounded binary read; text retains its monospaced,
+/// line-numbered viewer. This branch is created only for non-PDF files.
+private struct ImageOrTextFilePreviewView: View {
     let client: CodegClient
     let rootPath: String
     let absPath: String
