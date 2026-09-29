@@ -40,8 +40,18 @@ assert app['PRODUCT_MODULE_NAME'] == 'Codeg', app.get('PRODUCT_MODULE_NAME')
 assert app['ENABLE_TESTABILITY'] == 'YES', 'Debug app must enable @testable import'
 PY
 
+# Compile before booting CoreSimulator to avoid memory contention on CI.
+xcodebuild build-for-testing \
+  -project CodegiOS.xcodeproj -scheme CodegiOSSessionRecovery -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' -jobs 2 \
+  -derivedDataPath "$PWD/build/SimulatorDerivedData" \
+  -skipMacroValidation -skipPackagePluginValidation \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
+  DEVELOPMENT_TEAM= CODEG_DEVELOPMENT_TEAM= \
+  2>&1 | tee build/session-recovery-build.log
+
 xcrun simctl bootstatus "$SIMULATOR_ID" -b
-xcodebuild test \
+xcodebuild test-without-building \
   -project CodegiOS.xcodeproj -scheme CodegiOSSessionRecovery -configuration Debug \
   -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
   -destination-timeout 120 \

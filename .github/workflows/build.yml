@@ -76,6 +76,7 @@ jobs:
         with:
           name: session-recovery-tests-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            build/session-recovery-build.log
             build/session-recovery-tests.log
             build/SessionRecovery-*.xcresult
             build/session-recovery-simulators.json
