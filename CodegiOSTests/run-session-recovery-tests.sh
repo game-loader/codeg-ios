@@ -57,7 +57,7 @@ xcodebuild test-without-building \
   -destination-timeout 120 \
   -derivedDataPath "$PWD/build/SimulatorDerivedData" \
   -resultBundlePath "$PWD/build/SessionRecovery-$(date +%s).xcresult" \
-  -only-testing:CodegiOSTests/SessionForegroundRecoveryTests \
+  -only-testing:CodegiOSTests \
   -parallel-testing-enabled NO \
   -test-timeouts-enabled YES \
   -default-test-execution-time-allowance 30 \

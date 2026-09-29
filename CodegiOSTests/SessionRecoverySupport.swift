@@ -60,7 +60,8 @@ final class RecoveryResponseGate: @unchecked Sendable {
 
 final class RecoveryServer: @unchecked Sendable {
     private let lock = NSLock()
-    private var detail = RecoveryFixtures.detail(text: "Old reply")
+    private let agentType: AgentType
+    private var detail: [String: Any]
     private var connection: Any = NSNull()
     private var detailStatus = 200
     private var nextGate: RecoveryResponseGate?
@@ -69,9 +70,47 @@ final class RecoveryServer: @unchecked Sendable {
     private var promptID: String?
     private var counts: [String: Int] = [:]
     private var unexpected: [String] = []
+    private var requests: [(route: String, body: [String: Any])] = []
+    private var feedbackSettings: [String: Any] = ["enabled": false]
+    private var feedbackSettingsStatus = 200
+    private var connectionSnapshot: Any = NSNull()
+    private var snapshotGate: RecoveryResponseGate?
+    private var feedbackResponses: [(status: Int, payload: [String: Any], gate: RecoveryResponseGate?)] = []
+
+    init(agentType: AgentType = .claudeCode) {
+        self.agentType = agentType
+        detail = RecoveryFixtures.detail(text: "Old reply", agentType: agentType)
+    }
+    func setFeedbackEnabled(_ enabled: Bool, httpStatus: Int = 200) {
+        lock.lock(); defer { lock.unlock() }
+        feedbackSettings = ["enabled": enabled]; feedbackSettingsStatus = httpStatus
+    }
+    func setConnectionSnapshot(_ payload: [String: Any]?) {
+        lock.lock(); defer { lock.unlock() }
+        connectionSnapshot = payload.map { $0 as Any } ?? NSNull()
+    }
+    func holdNextConnectionSnapshot() -> RecoveryResponseGate {
+        lock.lock(); defer { lock.unlock() }
+        let gate = RecoveryResponseGate(); snapshotGate = gate; return gate
+    }
+    @discardableResult
+    func enqueueFeedbackResponse(_ payload: [String: Any], httpStatus: Int = 200,
+                                 held: Bool = false) -> RecoveryResponseGate? {
+        lock.lock(); defer { lock.unlock() }
+        let gate = held ? RecoveryResponseGate() : nil
+        feedbackResponses.append((httpStatus, payload, gate))
+        return gate
+    }
+    func bodies(_ route: String) -> [[String: Any]] {
+        lock.lock(); defer { lock.unlock() }
+        return requests.filter { $0.route == route }.map { $0.body }
+    }
+    var requestedRoutes: [String] {
+        lock.lock(); defer { lock.unlock() }; return requests.map { $0.route }
+    }
     func setDetail(text: String, status: String = "pending_review", httpStatus: Int = 200) {
         lock.lock(); defer { lock.unlock() }
-        detail = RecoveryFixtures.detail(text: text, status: status); detailStatus = httpStatus
+        detail = RecoveryFixtures.detail(text: text, status: status, agentType: agentType); detailStatus = httpStatus
     }
     func setConnected(_ connected: Bool) {
         lock.lock(); defer { lock.unlock() }
@@ -102,6 +141,8 @@ final class RecoveryServer: @unchecked Sendable {
         lock.lock()
         let route = request.url!.lastPathComponent
         counts[route, default: 0] += 1
+        let body = Self.requestBody(request)
+        requests.append((route, body))
         var status = 200
         var payload: Any = NSNull()
         var gate: RecoveryResponseGate?
@@ -111,26 +152,31 @@ final class RecoveryServer: @unchecked Sendable {
             switch route {
             case "get_folder_conversation":
                 payload = detail; status = detailStatus; gate = nextGate; nextGate = nil
-            case "list_all_folder_details", "list_open_folder_details": payload = [RecoveryFixtures.folder]
+            case "list_all_folder_details", "list_open_folder_details":
+                var folder = RecoveryFixtures.folder
+                folder["default_agent_type"] = agentType.rawValue
+                payload = [folder]
             case "acp_list_agents": payload = []
             case "acp_find_connection_for_conversation": payload = connection
             case "acp_connect": payload = "connection-42"
             case "create_conversation": payload = 42
             case "acp_prompt":
-                var body = request.httpBody ?? Data()
-                if body.isEmpty, let stream = request.httpBodyStream {
-                    stream.open(); defer { stream.close() }
-                    var buffer = [UInt8](repeating: 0, count: 4096)
-                    while stream.hasBytesAvailable {
-                        let count = stream.read(&buffer, maxLength: buffer.count)
-                        if count <= 0 { break }
-                        body.append(contentsOf: buffer.prefix(count))
-                    }
-                }
-                promptID = (try? JSONSerialization.jsonObject(with: body) as? [String: Any])?["clientMessageId"] as? String
-                gate = promptGate; promptGate = nil; status = promptStatus
+                promptID = body["clientMessageId"] as? String
+                gate = promptGate; promptGate = nil; status = promptStatus; promptStatus = 200
             case "acp_cancel": break
-            case "acp_get_session_snapshot_by_conversation", "acp_get_session_snapshot": break
+            case "get_feedback_settings":
+                payload = feedbackSettings; status = feedbackSettingsStatus
+            case "submit_session_feedback":
+                if feedbackResponses.isEmpty {
+                    payload = RecoveryFixtures.feedback(id: "feedback-\(counts[route]!)",
+                                                         text: body["text"] as? String ?? "", status: "delivered")
+                } else {
+                    let response = feedbackResponses.removeFirst()
+                    payload = response.payload; status = response.status; gate = response.gate
+                }
+            case "acp_get_session_snapshot_by_conversation": break
+            case "acp_get_session_snapshot":
+                payload = connectionSnapshot; gate = snapshotGate; snapshotGate = nil
             default: unexpected.append(route); status = 500
             }
         }
@@ -138,6 +184,20 @@ final class RecoveryServer: @unchecked Sendable {
         lock.unlock()
         if let gate { gate.hold { completion(status, data) } }
         else { completion(status, data) }
+    }
+    // URLSession may move an encoded body into a stream before URLProtocol sees it.
+    private static func requestBody(_ request: URLRequest) -> [String: Any] {
+        var data = request.httpBody ?? Data()
+        if data.isEmpty, let stream = request.httpBodyStream {
+            stream.open(); defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count <= 0 { break }
+                data.append(contentsOf: buffer.prefix(count))
+            }
+        }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
     }
 }
 
@@ -184,19 +244,31 @@ enum RecoveryFixtures {
         "last_opened_at": date, "sort_order": 0, "color": "blue",
         "default_agent_type": "claude_code"
     ]
-    static func detail(text: String, status: String = "pending_review") -> [String: Any] {
+    static func detail(text: String, status: String = "pending_review", agentType: AgentType = .claudeCode) -> [String: Any] {
         ["summary": ["id": 42, "folder_id": 7, "title": "Recovery",
-                     "agent_type": "claude_code", "status": status,
+                     "agent_type": agentType.rawValue, "status": status,
                      "message_count": 2, "created_at": date, "updated_at": date],
          "turns": [["id": "user-1", "role": "user", "timestamp": date,
                     "blocks": [["type": "text", "text": "Explain recovery"]]],
                    ["id": "assistant-1", "role": "assistant", "timestamp": date,
                     "blocks": [["type": "text", "text": text]]]]]
     }
-    static func snapshot(text: String? = nil, pending: Bool = false, messageID: String? = nil) throws -> LiveSessionSnapshot {
+    static func snapshot(text: String? = nil, pending: Bool = false, messageID: String? = nil,
+                         nativeSteeringAvailable: Bool? = nil, feedback: [[String: Any]]? = nil,
+                         activeToolCalls: [[String: Any]]? = nil) throws -> LiveSessionSnapshot {
         var json: [String: Any] = ["connection_id": "connection-42", "conversation_id": 42,
                                    "status": text == nil ? "connected" : "prompting", "event_seq": 12]
-        if let text { json["live_message"] = ["content": [["kind": "text", "text": text]]] }
+        if let nativeSteeringAvailable { json["native_steering_available"] = nativeSteeringAvailable }
+        if let feedback { json["feedback"] = feedback }
+        if let activeToolCalls { json["active_tool_calls"] = activeToolCalls }
+        if let text {
+            var content: [[String: Any]] = [["kind": "text", "text": text]]
+            content += (activeToolCalls ?? []).compactMap { tool -> [String: Any]? in
+                guard let id = tool["id"] as? String else { return nil }
+                return ["kind": "tool_call_ref", "tool_call_id": id]
+            }
+            json["live_message"] = ["content": content]
+        }
         if let messageID { json["pending_user_message"] = ["message_id": messageID, "blocks": []] }
         if pending {
             json["pending_permission"] = ["request_id": "permission-1", "tool_call": [:], "options": []]
@@ -204,9 +276,12 @@ enum RecoveryFixtures {
         }
         return try decode(json)
     }
-    static func event(_ type: String, fields: [String: Any] = [:]) throws -> EventStream.Frame {
+    static func feedback(id: String, text: String, status: String = "pending") -> [String: Any] {
+        ["id": id, "text": text, "status": status]
+    }
+    static func event(_ type: String, fields: [String: Any] = [:], seq: UInt64 = 13) throws -> EventStream.Frame {
         var json = fields
-        json["type"] = type; json["connection_id"] = "connection-42"; json["seq"] = 13
+        json["type"] = type; json["connection_id"] = "connection-42"; json["seq"] = seq
         let envelope: EventEnvelope = try decode(json)
         return .event(envelope)
     }
@@ -217,14 +292,15 @@ enum RecoveryFixtures {
 
 @MainActor
 final class RecoveryHarness {
-    let server = RecoveryServer()
+    let server: RecoveryServer
     let host = "\(UUID().uuidString.lowercased()).session-recovery.invalid"
     let session: URLSession
     var streams: [RecoveryEventStream] = []
     var nextSnapshot: LiveSessionSnapshot
     var nextDeliversSnapshot = true
     var model: SessionDetailViewModel!
-    init(newSession: Bool = false) throws {
+    init(newSession: Bool = false, agentType: AgentType = .claudeCode) throws {
+        server = RecoveryServer(agentType: agentType)
         nextSnapshot = try RecoveryFixtures.snapshot()
         RecoveryURLProtocol.register(server, host: host)
         let config = URLSessionConfiguration.ephemeral

@@ -1,6 +1,26 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Restore or dismiss unread feedback to continue.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先恢复或移除未读反馈，再继续发送。"
+          }
+        }
+      }
+    },
+    "Waiting for earlier message": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待前面的消息"
+          }
+        }
+      }
+    },
     "Send to queue" : {
       "localizations" : {
         "zh-Hans" : {

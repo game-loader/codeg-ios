@@ -14,15 +14,27 @@ struct SessionMessageQueueView: View {
 
     @State private var contentHeight: CGFloat = 0
     private static let maxHeight: CGFloat = 180
+    private var hasUnreadFeedback: Bool {
+        !isRunning && feedbackNotes.contains { $0.status == "pending" }
+    }
 
     private func waitingStatus(_ message: QueuedSessionMessage) -> LocalizedStringKey {
         if !isRunning { return "Queued" }
+        let predecessors = queuedMessages.prefix { $0.id != message.id }
+        if predecessors.contains(where: { $0.failure != nil }) { return "Waiting for earlier message" }
+        if predecessors.contains(where: { !$0.canSteer }) { return "After this reply" }
         return usesToolBoundaryDelivery && message.canSteer ? "After next tool call" : "After this reply"
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                if hasUnreadFeedback, !queuedMessages.isEmpty {
+                    Text("Restore or dismiss unread feedback to continue.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                        .padding(.vertical, 8)
+                }
                 ForEach(queuedMessages) { message in
                     queuedRow(message)
                     if message.id != queuedMessages.last?.id || !feedbackNotes.isEmpty {
@@ -80,10 +92,12 @@ struct SessionMessageQueueView: View {
                 if message.failure != nil {
                     Button("Retry") { onRetry(message.id) }
                         .frame(minHeight: 44)
+                        .disabled(hasUnreadFeedback)
                         .opacity(message.isSending ? 0.5 : 1)
                 } else if !isRunning {
                     Button("Send") { onRetry(message.id) }
                         .frame(minHeight: 44)
+                        .disabled(hasUnreadFeedback)
                 }
                 Button { onRemove(message.id) } label: {
                     Image(systemName: "xmark")

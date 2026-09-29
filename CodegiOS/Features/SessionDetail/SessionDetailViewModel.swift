@@ -108,6 +108,8 @@ final class SessionDetailViewModel {
     private var viewActive = true
     private var steeringCapabilityTask: Task<Void, Never>?
     private var steeringDowngradedConnection: String?
+    private var queuedPromptIDs: [String: UUID] = [:]
+    var isDeliveringQueuedFeedback: Bool { queueDeliveryTask != nil }
 
     private(set) var summary: ConversationSummary?
     private(set) var sessionStats: SessionStats?
@@ -790,6 +792,7 @@ final class SessionDetailViewModel {
         guard let index = queuedMessages.firstIndex(where: { $0.id == id }),
               !queuedMessages[index].isSending, queueDeliveryTask == nil else { return }
         queuedMessages[index].failure = nil
+        queueBusyRetries = 0
         queuePaused = false
         sendQueuedHeadIfIdle()
     }
@@ -797,10 +800,12 @@ final class SessionDetailViewModel {
     func dismissFeedbackNote(_ id: String) {
         dismissedFeedback.insert(id)
         feedbackNotes.removeAll { $0.id == id }
+        sendQueuedHeadIfIdle()
     }
 
     func restoreFeedbackNote(_ id: String) {
         guard let item = feedbackNotes.first(where: { $0.id == id && $0.status == "pending" }) else { return }
+        queuePaused = true
         draft = draft.isEmpty ? item.text : draft + "\n\n" + item.text
         dismissFeedbackNote(id)
     }
@@ -819,6 +824,7 @@ final class SessionDetailViewModel {
     }
 
     private func restoreFeedback(from snapshot: LiveSessionSnapshot, connectionID conn: String) {
+        if let messageID = snapshot.pendingUserMessageId { acceptQueuedPrompt(messageID) }
         for item in snapshot.feedback { mergeFeedback(item) }
         usesToolBoundaryDelivery = false
         steeringCapabilityTask?.cancel()
@@ -827,17 +833,25 @@ final class SessionDetailViewModel {
         steeringCapabilityTask = Task { [weak self] in
             guard let self else { return }
             let enabled = (try? await self.client.feedbackEnabled()) ?? false
-            guard !Task.isCancelled, self.connectionID == conn, self.viewActive else { return }
+            guard !Task.isCancelled, self.connectionID == conn, self.viewActive,
+                  self.steeringDowngradedConnection != conn else { return }
             self.usesToolBoundaryDelivery = enabled
         }
     }
 
     private func sendQueuedHeadIfIdle() {
         guard viewActive, !queuePaused, phase == .loaded,
+              !feedbackNotes.contains(where: { $0.status == "pending" }),
               !isInFlight, !isSubmittingPrompt, queueDeliveryTask == nil, queueRetryTask == nil,
               let first = queuedMessages.first, !first.isSending, first.failure == nil else { return }
         queuedMessages[0].isSending = true
         send(overrideText: first.text, queuedMessage: first)
+    }
+
+    private func acceptQueuedPrompt(_ messageID: String) {
+        guard let id = queuedPromptIDs.removeValue(forKey: messageID) else { return }
+        queuedMessages.removeAll { $0.id == id }
+        queueBusyRetries = 0
     }
 
     private func recoverQueuedBusySend(userTurnID: String) {
@@ -905,6 +919,16 @@ final class SessionDetailViewModel {
                         self.steeringDowngradedConnection = conn
                         break // backend downgraded to cooperative feedback
                     }
+                    guard self.queueGeneration == generation, self.isTurnActive else { break }
+                    // A delivered response can also downgrade a misbehaving
+                    // adapter. Do not send the remaining batch into a pull-only
+                    // channel while still promising native tool-boundary input.
+                    let verified = try await self.client.connectionSnapshot(connectionId: conn)
+                    if verified?.nativeSteeringAvailable != true {
+                        self.usesToolBoundaryDelivery = false
+                        if verified != nil { self.steeringDowngradedConnection = conn }
+                        break
+                    }
                 } catch {
                     if let current = self.queuedMessages.firstIndex(where: { $0.id == id }) {
                         self.queuedMessages[current].isSending = false
@@ -951,9 +975,7 @@ final class SessionDetailViewModel {
         resumeGeneration &+= 1
         queueGeneration &+= 1
         completedQueueTools.removeAll()
-        feedbackNotes.removeAll()
-        consumedFeedback.removeAll()
-        dismissedFeedback.removeAll()
+        feedbackNotes.removeAll { $0.status == "delivered" }
         // A draft (no linked summary yet) needs a folder + agent before it can
         // connect; lock the pickers the moment its first send begins.
         if summary == nil {
@@ -1011,12 +1033,12 @@ final class SessionDetailViewModel {
         sendOperationID = operationID
         let userTurnID = userTurn.id
         sendTask = Task { [weak self] in
-            await self?.runSend(text: text, attachments: sending, live: live, userTurnID: userTurnID)
+            let accepted = await self?.runSend(text: text, attachments: sending, live: live, userTurnID: userTurnID) ?? false
             guard let self, self.sendOperationID == operationID else { return }
             if let item = queuedMessage,
                let index = self.queuedMessages.firstIndex(where: { $0.id == item.id }),
                self.queuedMessages[index].isSending {
-                if Task.isCancelled {
+                if !accepted {
                     self.queuedMessages[index].isSending = false
                     self.queuedMessages[index].failure = String(localized: "Delivery unconfirmed. Check the conversation before retrying.")
                 } else {
@@ -1034,8 +1056,11 @@ final class SessionDetailViewModel {
         }
     }
 
-    private func runSend(text: String, attachments sending: [Attachment], live: LiveTurn, userTurnID: String) async {
+    private func runSend(text: String, attachments sending: [Attachment], live: LiveTurn, userTurnID: String) async -> Bool {
         let clientMessageID = UUID().uuidString
+        if let item = queuedMessages.first(where: { "queued-\($0.id)" == userTurnID }) {
+            queuedPromptIDs[clientMessageID] = item.id
+        }
         do {
             // For a brand-new draft, create the conversation row server-side BEFORE
             // prompting so every client (desktop / web) sees it immediately. No-op
@@ -1048,7 +1073,7 @@ final class SessionDetailViewModel {
 
             // Open the event stream and wait until it is ready + attached.
             try await openStream(connectionID: conn, live: live)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return false }
 
             isTurnActive = true
             if case .connecting = sendState { sendState = .thinking }
@@ -1058,23 +1083,25 @@ final class SessionDetailViewModel {
             // failure is a *stream* failure (handled by the consumer loop), not a
             // send failure, so the optimistic turn must stay on screen.
             try await sendPrompt(conn: conn, text: text, attachments: sending, clientMessageID: clientMessageID)
+            acceptQueuedPrompt(clientMessageID)
             // Prompt accepted — the created conversation is now legitimately in use,
             // so it must not be rolled back by a later stream failure.
             draftCreatedConversationID = nil
+            return true
         } catch let error as APIError where error.isStaleConnection {
-            guard liveTurn === live, confirmedPromptID != clientMessageID else { return }
+            guard liveTurn === live, confirmedPromptID != clientMessageID else { return confirmedPromptID == clientMessageID }
             // Stale connection → drop it and retry once with a fresh spawn.
             connectionID = nil
-            await retrySendOnce(text: text, attachments: sending, live: live, clientMessageID: clientMessageID, userTurnID: userTurnID)
+            return await retrySendOnce(text: text, attachments: sending, live: live, clientMessageID: clientMessageID, userTurnID: userTurnID)
         } catch APIError.turnInProgress {
-            guard liveTurn === live, confirmedPromptID != clientMessageID else { return }
+            guard liveTurn === live, confirmedPromptID != clientMessageID else { return confirmedPromptID == clientMessageID }
             notice = "A turn is already running on this session. Try again in a moment."
             discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text, restoringAttachments: sending)
             recoverQueuedBusySend(userTurnID: userTurnID)
         } catch is CancellationError {
             // Cancelled by the user / view teardown — handled in cancel().
         } catch {
-            guard liveTurn === live, confirmedPromptID != clientMessageID else { return }
+            guard liveTurn === live, confirmedPromptID != clientMessageID else { return confirmedPromptID == clientMessageID }
             // Reaching here means the prompt was never accepted (resolve/attach/
             // prompt threw), so the optimistic user turn never made it to the
             // server. Roll it back and surface why, instead of stranding a
@@ -1082,9 +1109,10 @@ final class SessionDetailViewModel {
             discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text, restoringAttachments: sending)
             notice = Self.describe(error)
         }
+        return confirmedPromptID == clientMessageID
     }
 
-    private func retrySendOnce(text: String, attachments sending: [Attachment], live: LiveTurn, clientMessageID: String, userTurnID: String) async {
+    private func retrySendOnce(text: String, attachments sending: [Attachment], live: LiveTurn, clientMessageID: String, userTurnID: String) async -> Bool {
         do {
             closeStream()
             let prefs = preferredSelectors
@@ -1097,23 +1125,26 @@ final class SessionDetailViewModel {
             )
             connectionID = conn
             try await openStream(connectionID: conn, live: live)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return false }
             isTurnActive = true
             if case .connecting = sendState { sendState = .thinking }
             try await sendPrompt(conn: conn, text: text, attachments: sending, clientMessageID: clientMessageID)
+            acceptQueuedPrompt(clientMessageID)
             draftCreatedConversationID = nil
+            return true
         } catch is CancellationError {
             // no-op
         } catch APIError.turnInProgress {
-            guard liveTurn === live, confirmedPromptID != clientMessageID else { return }
+            guard liveTurn === live, confirmedPromptID != clientMessageID else { return confirmedPromptID == clientMessageID }
             notice = "A turn is already running on this session. Try again in a moment."
             discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text, restoringAttachments: sending)
             recoverQueuedBusySend(userTurnID: userTurnID)
         } catch {
-            guard liveTurn === live, confirmedPromptID != clientMessageID else { return }
+            guard liveTurn === live, confirmedPromptID != clientMessageID else { return confirmedPromptID == clientMessageID }
             discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text, restoringAttachments: sending)
             notice = Self.describe(error)
         }
+        return confirmedPromptID == clientMessageID
     }
 
     /// The user's last-used mode/config for the active agent, sent on every
@@ -1341,6 +1372,7 @@ final class SessionDetailViewModel {
                 if readyContinuation == nil, isTurnActive {
                     if let submitted = promptSubmissionID, snap.pendingUserMessageId == submitted {
                         confirmedPromptID = submitted
+                        acceptQueuedPrompt(submitted)
                         draftCreatedConversationID = nil
                     }
                     if let rebuilt = buildLiveTurn(from: snap) {
@@ -1517,6 +1549,7 @@ final class SessionDetailViewModel {
     /// than the snapshot we loaded a beat too early. No-op if a turn has since
     /// started locally — that path owns the transcript.
     private func reconcileAfterMissedLive() async {
+        defer { sendQueuedHeadIfIdle() }
         let generation = resumeGeneration
         guard let id = conversationID, liveTurn == nil, !isInFlight, stream == nil else { return }
         guard let detail = try? await client.conversationDetail(id: id) else { return }
@@ -1571,6 +1604,7 @@ final class SessionDetailViewModel {
                     // between the detail fetch and this snapshot — reconcile so the
                     // final reply isn't missing from the (now stale) transcript.
                     if serverSaysLive { await reconcileAfterMissedLive() }
+                    sendQueuedHeadIfIdle()
                     return
                 }
             case .replay(let events):
@@ -1742,11 +1776,10 @@ final class SessionDetailViewModel {
             applyUsage(used: used, size: size)
 
         case .userMessage(let messageID, _):
+            acceptQueuedPrompt(messageID)
             queueGeneration &+= 1
             completedQueueTools.removeAll()
-            feedbackNotes.removeAll()
-            consumedFeedback.removeAll()
-            dismissedFeedback.removeAll()
+            feedbackNotes.removeAll { $0.status == "delivered" }
             if messageID == promptSubmissionID {
                 confirmedPromptID = messageID
                 draftCreatedConversationID = nil
@@ -1762,6 +1795,7 @@ final class SessionDetailViewModel {
             for index in feedbackNotes.indices where consumedFeedback.contains(feedbackNotes[index].id) {
                 feedbackNotes[index].status = "delivered"
             }
+            sendQueuedHeadIfIdle()
 
         case .turnComplete(let stopReason):
             // A turn that ended badly keeps the reason it was given, inline — e.g.
@@ -2129,6 +2163,8 @@ final class SessionDetailViewModel {
                 sendState = .idle
                 closeStream()
                 requestScrollToBottom()
+                queueGeneration &+= 1
+                sendQueuedHeadIfIdle()
                 return
             }
         }
