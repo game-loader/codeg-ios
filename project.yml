@@ -94,3 +94,40 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+
+  CodegiOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: CodegiOSTests
+        excludes:
+          - "*.md"
+          - "*.sh"
+    dependencies:
+      - target: CodegiOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.codeg.ios.session-recovery-tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Codeg.app/Codeg"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+schemes:
+  # Keep the original device-build scheme explicit when adding a test scheme.
+  CodegiOS:
+    build:
+      targets:
+        CodegiOS: all
+  CodegiOSSessionRecovery:
+    build:
+      targets:
+        CodegiOS: all
+        CodegiOSTests: [test]
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - name: CodegiOSTests
+          parallelizable: false
+          randomExecutionOrder: false

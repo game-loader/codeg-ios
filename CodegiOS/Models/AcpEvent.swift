@@ -366,10 +366,13 @@ struct LiveSessionSnapshot: Sendable, Decodable {
     let pendingPermission: PendingPermissionSnapshot?
     let pendingQuestion: PendingQuestionSnapshot?
     let pendingPlanApproval: PendingPlanApprovalSnapshot?
+    let pendingUserMessageId: String?
+
+    private struct PendingUserMessage: Decodable { let messageId: String }
 
     private enum CodingKeys: String, CodingKey {
         case connectionId, conversationId, folderId, status, externalId, eventSeq
-        case liveMessage, activeToolCalls, pendingPermission, pendingQuestion, pendingPlanApproval
+        case liveMessage, activeToolCalls, pendingPermission, pendingQuestion, pendingPlanApproval, pendingUserMessage
     }
 
     init(from decoder: Decoder) throws {
@@ -385,6 +388,7 @@ struct LiveSessionSnapshot: Sendable, Decodable {
         pendingPermission = (try? c.decodeIfPresent(PendingPermissionSnapshot.self, forKey: .pendingPermission)) ?? nil
         pendingQuestion = (try? c.decodeIfPresent(PendingQuestionSnapshot.self, forKey: .pendingQuestion)) ?? nil
         pendingPlanApproval = (try? c.decodeIfPresent(PendingPlanApprovalSnapshot.self, forKey: .pendingPlanApproval)) ?? nil
+        pendingUserMessageId = (try? c.decodeIfPresent(PendingUserMessage.self, forKey: .pendingUserMessage))?.messageId
     }
 }
 

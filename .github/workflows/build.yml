@@ -65,6 +65,24 @@ jobs:
             DEVELOPMENT_TEAM= CODEG_DEVELOPMENT_TEAM= \
             2>&1 | tee build/xcodebuild.log | xcbeautify
 
+      - name: Test session foreground recovery on iPhone simulator
+        run: |
+          set -euo pipefail
+          bash CodegiOSTests/run-session-recovery-tests.sh | xcbeautify
+
+      - name: Save session recovery test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: session-recovery-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/session-recovery-tests.log
+            build/SessionRecovery-*.xcresult
+            build/session-recovery-simulators.json
+            build/session-recovery-settings.json
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Save raw build log on failure
         if: ${{ failure() }}
         uses: actions/upload-artifact@v7

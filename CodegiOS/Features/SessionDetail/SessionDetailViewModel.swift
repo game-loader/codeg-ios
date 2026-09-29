@@ -184,6 +184,10 @@ final class SessionDetailViewModel {
     private var stream: (any SessionEventStream)?
     /// The outer send pipeline (resolve connection → open stream → prompt).
     private var sendTask: Task<Void, Never>?
+    private var sendOperationID: UUID?
+    private var promptSubmissionID: String?
+    private var confirmedPromptID: String?
+    private var recoverAfterSubmission = false
     /// The long-lived loop consuming `stream.frames`.
     private var consumerTask: Task<Void, Never>?
     private let subscriptionID = UUID().uuidString
@@ -323,9 +327,9 @@ final class SessionDetailViewModel {
     func resume() async {
         resumeGeneration &+= 1
         let generation = resumeGeneration
-        // An accepted prompt may still be awaiting its HTTP response. Let that
-        // pipeline finish before replacing its socket or optimistic state.
-        if let sendTask { await sendTask.value }
+        // Only pre-submit setup owns the attach handshake. Once POST is in
+        // flight, recovery must not wait for its possibly delayed response.
+        if promptSubmissionID == nil, let sendTask { await sendTask.value }
         guard !Task.isCancelled, generation == resumeGeneration else { return }
         guard phase == .loaded else {
             await load()
@@ -370,7 +374,7 @@ final class SessionDetailViewModel {
                 // A just-finished reply may not have reached disk yet. Keep it
                 // visible until the existing reconciliation loop confirms it.
                 if let live = liveTurn, live.hasContent, !serverSaysLive,
-                   !transcriptAdvanced(detail.turns, from: turns) {
+                   (!transcriptAdvanced(detail.turns, from: turns) || !Self.transcriptHasReply(detail.turns)) {
                     await refreshAfterTurn(reconciling: live)
                     return
                 }
@@ -820,9 +824,20 @@ final class SessionDetailViewModel {
 
         // 3) Run the network + streaming flow.
         sendTask?.cancel()
+        confirmedPromptID = nil
+        recoverAfterSubmission = false
+        let operationID = UUID()
+        sendOperationID = operationID
         let userTurnID = userTurn.id
         sendTask = Task { [weak self] in
             await self?.runSend(text: text, attachments: sending, live: live, userTurnID: userTurnID)
+            guard let self, self.sendOperationID == operationID else { return }
+            self.sendTask = nil
+            self.sendOperationID = nil
+            if self.recoverAfterSubmission {
+                self.recoverAfterSubmission = false
+                await self.resume()
+            }
         }
     }
 
@@ -854,15 +869,18 @@ final class SessionDetailViewModel {
             // so it must not be rolled back by a later stream failure.
             draftCreatedConversationID = nil
         } catch let error as APIError where error.isStaleConnection {
+            guard liveTurn === live, confirmedPromptID != clientMessageID else { return }
             // Stale connection → drop it and retry once with a fresh spawn.
             connectionID = nil
             await retrySendOnce(text: text, attachments: sending, live: live, clientMessageID: clientMessageID, userTurnID: userTurnID)
         } catch APIError.turnInProgress {
+            guard liveTurn === live, confirmedPromptID != clientMessageID else { return }
             notice = "A turn is already running on this session. Try again in a moment."
             discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text, restoringAttachments: sending)
         } catch is CancellationError {
             // Cancelled by the user / view teardown — handled in cancel().
         } catch {
+            guard liveTurn === live, confirmedPromptID != clientMessageID else { return }
             // Reaching here means the prompt was never accepted (resolve/attach/
             // prompt threw), so the optimistic user turn never made it to the
             // server. Roll it back and surface why, instead of stranding a
@@ -893,9 +911,11 @@ final class SessionDetailViewModel {
         } catch is CancellationError {
             // no-op
         } catch APIError.turnInProgress {
+            guard liveTurn === live, confirmedPromptID != clientMessageID else { return }
             notice = "A turn is already running on this session. Try again in a moment."
             discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text, restoringAttachments: sending)
         } catch {
+            guard liveTurn === live, confirmedPromptID != clientMessageID else { return }
             discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text, restoringAttachments: sending)
             notice = Self.describe(error)
         }
@@ -960,6 +980,8 @@ final class SessionDetailViewModel {
     }
 
     private func sendPrompt(conn: String, text: String, attachments sending: [Attachment], clientMessageID: String) async throws {
+        promptSubmissionID = clientMessageID
+        defer { if promptSubmissionID == clientMessageID { promptSubmissionID = nil } }
         // Text first, then images — matches the web client's block order.
         var blocks: [PromptInputBlock] = []
         if !text.isEmpty { blocks.append(.text(text)) }
@@ -1119,6 +1141,10 @@ final class SessionDetailViewModel {
                 // Skipped during the INITIAL attach handshake (readyContinuation set)
                 // — that snapshot is the pre-prompt state and carries no live card.
                 if readyContinuation == nil, isTurnActive {
+                    if let submitted = promptSubmissionID, snap.pendingUserMessageId == submitted {
+                        confirmedPromptID = submitted
+                        draftCreatedConversationID = nil
+                    }
                     if let rebuilt = buildLiveTurn(from: snap) {
                         live.replaceContent(from: rebuilt)
                         if pendingUserTurns.isEmpty { liveTurnFromReattach = true }
@@ -1126,6 +1152,12 @@ final class SessionDetailViewModel {
                         sendState = live.activeToolTitle.map { .running(tool: $0) } ?? .thinking
                         requestScrollToBottom()
                     } else {
+                        if let submitted = promptSubmissionID, confirmedPromptID != submitted {
+                            // The snapshot may precede acceptance of the HTTP
+                            // prompt. Keep listening, then recheck when it settles.
+                            recoverAfterSubmission = true
+                            continue
+                        }
                         // The turn finished while we were away: no new terminal
                         // event will arrive. Pull its persisted final reply now.
                         finalize(live: live, stopReason: "end_turn")
@@ -1260,6 +1292,7 @@ final class SessionDetailViewModel {
         // Gives pre-snapshot failures the same bounded reconnect path as an
         // established stream; previously those failures silently stranded it.
         liveTurn = LiveTurn()
+        liveTurnFromReattach = true
         isTurnActive = true
         streamReconnects = 0
         stream = newStream
@@ -1499,7 +1532,11 @@ final class SessionDetailViewModel {
         case .usageUpdate(let used, let size):
             applyUsage(used: used, size: size)
 
-        case .userMessage:
+        case .userMessage(let messageID, _):
+            if messageID == promptSubmissionID {
+                confirmedPromptID = messageID
+                draftCreatedConversationID = nil
+            }
             // The server echoes our own prompt; we already showed it optimistically.
             break
 
@@ -1849,13 +1886,15 @@ final class SessionDetailViewModel {
             // baseline AND ends with a real reply — never a stale read.
             if Self.transcriptHasReply(detail.turns),
                transcriptAdvanced(detail.turns, from: turns)
-                || (liveTurnFromReattach && detail.inFlightUserTurnId == nil
-                    && detail.summary.status != .inProgress) {
+ {
                 isTurnActive = false
                 clearInteractivePrompts()
                 turns = detail.turns
                 pendingUserTurns.removeAll()
                 liveTurn = nil
+                liveTurnFromReattach = false
+                clearRetryNotice()
+                lastStreamError = nil
                 sendState = .idle
                 closeStream()
                 requestScrollToBottom()
@@ -2004,8 +2043,7 @@ final class SessionDetailViewModel {
                 // A restored partial assistant turn may be updated in place:
                 // the count stays equal while its content becomes complete.
                 let advanced = transcriptAdvanced(detail.turns, from: baselineTurns)
-                    || (liveTurnFromReattach && detail.inFlightUserTurnId == nil
-                        && detail.summary.status != .inProgress)
+
                 if advanced, !mustPreserveReply || Self.transcriptHasReply(detail.turns) {
                     turns = detail.turns
                     pendingUserTurns.removeAll()
@@ -2048,6 +2086,14 @@ final class SessionDetailViewModel {
         // Only act while this is still the current live turn — if a newer turn has
         // taken over, it already owns (and preserved) the prior state.
         guard liveTurn === live else { return }
+        if liveTurnFromReattach, live.hasContent, let prompt = turns.lastIndex(where: { $0.role == .user }) {
+            // The restored snapshot already contains this reply's full content.
+            // Replace its persisted partial rather than rendering both copies
+            // when final persistence is delayed or temporarily unreachable.
+            turns = turns.enumerated().filter {
+                $0.offset <= prompt || $0.element.role != .assistant
+            }.map(\.element)
+        }
         turns.append(contentsOf: pendingUserTurns)
         pendingUserTurns.removeAll()
         // Only fold in an assistant turn that actually has renderable content. A
@@ -2146,6 +2192,8 @@ final class SessionDetailViewModel {
         isTurnActive = false
         sendTask?.cancel()
         sendTask = nil
+        sendOperationID = nil
+        recoverAfterSubmission = false
         consumerTask?.cancel()
         consumerTask = nil
         agentOptions.teardown()

@@ -242,7 +242,7 @@ struct SessionDetailView: View {
             turns: model.turns,
             pendingUserTurns: model.pendingUserTurns,
             liveTurn: model.liveTurn,
-            liveOwnsInFlightReply: model.liveTurnFromReattach,
+            liveOwnsInFlightReply: model.liveTurnFromReattach && model.liveTurn?.hasContent == true,
             agent: model.agentTypeForUI,
             turnsVersion: model.turnsVersion,
             scrollTick: model.scrollTick,
