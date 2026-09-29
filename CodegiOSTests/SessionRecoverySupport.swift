@@ -173,6 +173,9 @@ final class RecoveryEventStream: SessionEventStream, @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return attachments.contains { $0.0 == "connection-42" && $0.1 == nil }
     }
+    var attachCount: Int {
+        lock.lock(); defer { lock.unlock() }; return attachments.count
+    }
 }
 
 enum RecoveryFixtures {

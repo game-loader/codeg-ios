@@ -297,6 +297,9 @@ final class SessionDetailViewModel {
     /// flight", so the compose bar returns to its send state. (Reading the live
     /// turn's `isStreaming` here lets SwiftUI track it transitively.)
     var isInFlight: Bool { liveTurn?.isStreaming == true }
+    /// Includes setup and a pending HTTP acknowledgement, independently of
+    /// the reply stream (which can already be active, or even completed).
+    var isSubmittingPrompt: Bool { sendOperationID != nil }
 
     /// True when there is no content at all to show in the loaded state.
     var isEmptyTranscript: Bool {
@@ -1116,6 +1119,7 @@ final class SessionDetailViewModel {
     /// consumer (its `generation` no longer current) ignores its terminal frames
     /// so it can't end a turn that a newer stream now owns.
     private func consume(stream: any SessionEventStream, connectionID conn: String, live: LiveTurn, generation: Int) async {
+        var submissionAtAttach: String?
         for await frame in stream.frames {
             guard !Task.isCancelled, generation == streamGeneration else { return }
             let isCurrent = generation == streamGeneration
@@ -1126,6 +1130,7 @@ final class SessionDetailViewModel {
                 // prompt is fired. Otherwise acp_prompt (a separate HTTP request)
                 // can reach the server before the WS attach is registered, and the
                 // first streamed events would be delivered to no subscriber.
+                submissionAtAttach = promptSubmissionID
                 stream.attach(subscriptionId: subscriptionID, connectionId: conn, sinceSeq: nil)
             case .snapshot(let snap):
                 recoveryTimeoutTask?.cancel()
@@ -1152,10 +1157,18 @@ final class SessionDetailViewModel {
                         sendState = live.activeToolTitle.map { .running(tool: $0) } ?? .thinking
                         requestScrollToBottom()
                     } else {
-                        if let submitted = promptSubmissionID, confirmedPromptID != submitted {
+                        if let submitted = submissionAtAttach, confirmedPromptID != submitted {
                             // The snapshot may precede acceptance of the HTTP
-                            // prompt. Keep listening, then recheck when it settles.
-                            recoverAfterSubmission = true
+                            // prompt, even when its HTTP response won the race
+                            // to this actor. Recheck after acceptance, never
+                            // interpret the older idle state as completion.
+                            if promptSubmissionID == submitted {
+                                recoverAfterSubmission = true
+                            } else {
+                                submissionAtAttach = nil
+                                stream.attach(subscriptionId: subscriptionID, connectionId: conn, sinceSeq: nil)
+                                armRecoveryTimeout(live: live, connectionID: conn, generation: generation)
+                            }
                             continue
                         }
                         // The turn finished while we were away: no new terminal

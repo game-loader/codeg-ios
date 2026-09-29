@@ -281,8 +281,9 @@ final class SessionForegroundRecoveryTests: XCTestCase {
         }
         gate.release()
         await recovery.value
-        // Ensure the late HTTP failure has been processed by the send pipeline.
-        await h.model.resume()
+        try await eventually("Late HTTP failure must actually finish processing") {
+            !h.model.isSubmittingPrompt
+        }
         try await eventually("Confirmed prompt must survive a late HTTP failure") {
             h.liveText == "Accepted and streaming" && h.model.isInFlight
         }
@@ -310,6 +311,32 @@ final class SessionForegroundRecoveryTests: XCTestCase {
         try await eventually("Completion event must settle the spinner") { !h.model.isInFlight }
         await h.model.resume()
         XCTAssertTrue((h.persistedText + h.liveText).contains("Entire new reply"))
+        XCTAssertEqual(h.server.count("acp_prompt"), 1)
+    }
+
+    func testIdleSnapshotFromBeforeAcceptanceCannotFinishAnAcceptedPrompt() async throws {
+        let h = try RecoveryHarness()
+        defer { finish(h) }
+        await h.model.load()
+        let gate = h.server.holdNextPrompt()
+        defer { gate.release() }
+        h.model.draft = "Submit while recovering"
+        h.model.send()
+        try await eventually("POST must be pending") { gate.hasRequest }
+        h.server.setConnected(true)
+        h.nextDeliversSnapshot = false
+        await h.model.resume()
+        let recovered = try XCTUnwrap(h.streams.last)
+        try await eventually("Recovery attaches before POST acceptance") { recovered.attachCount == 1 }
+        gate.release()
+        try await eventually("POST acknowledgement arrives before the old snapshot") {
+            !h.model.isSubmittingPrompt
+        }
+        recovered.emit(.snapshot(try RecoveryFixtures.snapshot()))
+        try await eventually("Stale idle snapshot must request a fresh snapshot") { recovered.attachCount == 2 }
+        XCTAssertTrue(h.model.isInFlight)
+        recovered.emit(.snapshot(try RecoveryFixtures.snapshot(text: "Newly accepted reply")))
+        try await eventually("Fresh snapshot restores the accepted turn") { h.liveText == "Newly accepted reply" }
         XCTAssertEqual(h.server.count("acp_prompt"), 1)
     }
 }
