@@ -102,9 +102,12 @@ final class SessionDetailViewModel {
     private var completedQueueTools: Set<String> = []
     private var queueGeneration = 0
     private var queueDeliveryTask: Task<Void, Never>?
+    private var queueRetryTask: Task<Void, Never>?
+    private var queueBusyRetries = 0
     private var queuePaused = false
     private var viewActive = true
     private var steeringCapabilityTask: Task<Void, Never>?
+    private var steeringDowngradedConnection: String?
 
     private(set) var summary: ConversationSummary?
     private(set) var sessionStats: SessionStats?
@@ -819,7 +822,8 @@ final class SessionDetailViewModel {
         for item in snapshot.feedback { mergeFeedback(item) }
         usesToolBoundaryDelivery = false
         steeringCapabilityTask?.cancel()
-        guard agentTypeForUI == .codex, snapshot.nativeSteeringAvailable else { return }
+        guard agentTypeForUI == .codex, snapshot.nativeSteeringAvailable,
+              steeringDowngradedConnection != conn else { return }
         steeringCapabilityTask = Task { [weak self] in
             guard let self else { return }
             let enabled = (try? await self.client.feedbackEnabled()) ?? false
@@ -830,17 +834,35 @@ final class SessionDetailViewModel {
 
     private func sendQueuedHeadIfIdle() {
         guard viewActive, !queuePaused, phase == .loaded,
-              !isInFlight, !isSubmittingPrompt, queueDeliveryTask == nil,
+              !isInFlight, !isSubmittingPrompt, queueDeliveryTask == nil, queueRetryTask == nil,
               let first = queuedMessages.first, !first.isSending, first.failure == nil else { return }
         queuedMessages[0].isSending = true
         send(overrideText: first.text, queuedMessage: first)
+    }
+
+    private func recoverQueuedBusySend(userTurnID: String) {
+        guard let index = queuedMessages.firstIndex(where: { "queued-\($0.id)" == userTurnID }),
+              queueBusyRetries < 3, viewActive else { return }
+        // turn_complete can beat the server's idle transition. The 409 proves
+        // this draft was not accepted, so a bounded delayed retry is safe.
+        queueBusyRetries += 1
+        queuedMessages[index].failure = nil
+        queuePaused = false
+        let generation = queueGeneration
+        queueRetryTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+            guard let self else { return }
+            self.queueRetryTask = nil
+            guard self.viewActive, self.queueGeneration == generation else { return }
+            await self.resume()
+        }
     }
 
     private func deliverQueueAtToolBoundary(id: String, status: String?) {
         guard status == "completed" || status == "failed",
               !id.isEmpty, completedQueueTools.insert(id).inserted,
               viewActive, !queuePaused, isTurnActive, agentTypeForUI == .codex,
-              queueDeliveryTask == nil, let conn = connectionID,
+              queueDeliveryTask == nil, let conn = connectionID, steeringDowngradedConnection != conn,
               let head = queuedMessages.first, head.failure == nil, !head.isSending, head.canSteer else { return }
         // Only drafts present at this boundary are admitted. New input waits for
         // another tool; repeated/replayed completion events cannot resubmit it.
@@ -880,6 +902,7 @@ final class SessionDetailViewModel {
                     if self.connectionID == conn { self.mergeFeedback(note) }
                     if note.status != "delivered" {
                         self.usesToolBoundaryDelivery = false
+                        self.steeringDowngradedConnection = conn
                         break // backend downgraded to cooperative feedback
                     }
                 } catch {
@@ -998,6 +1021,7 @@ final class SessionDetailViewModel {
                     self.queuedMessages[index].failure = String(localized: "Delivery unconfirmed. Check the conversation before retrying.")
                 } else {
                     self.queuedMessages.remove(at: index)
+                    self.queueBusyRetries = 0
                 }
             }
             self.sendTask = nil
@@ -1046,6 +1070,7 @@ final class SessionDetailViewModel {
             guard liveTurn === live, confirmedPromptID != clientMessageID else { return }
             notice = "A turn is already running on this session. Try again in a moment."
             discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text, restoringAttachments: sending)
+            recoverQueuedBusySend(userTurnID: userTurnID)
         } catch is CancellationError {
             // Cancelled by the user / view teardown — handled in cancel().
         } catch {
@@ -1083,6 +1108,7 @@ final class SessionDetailViewModel {
             guard liveTurn === live, confirmedPromptID != clientMessageID else { return }
             notice = "A turn is already running on this session. Try again in a moment."
             discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text, restoringAttachments: sending)
+            recoverQueuedBusySend(userTurnID: userTurnID)
         } catch {
             guard liveTurn === live, confirmedPromptID != clientMessageID else { return }
             discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text, restoringAttachments: sending)
@@ -1955,6 +1981,7 @@ final class SessionDetailViewModel {
     /// live placeholder, and restore the user's text so they can retry. The
     /// caller surfaces the reason via `notice`.
     private func discardOptimisticSend(userTurnID: String, live: LiveTurn, restoringDraft text: String, restoringAttachments sent: [Attachment]) {
+        queuePaused = true
         isTurnActive = false
         clearInteractivePrompts()
         closeStream()
@@ -2355,6 +2382,8 @@ final class SessionDetailViewModel {
     func cancel() {
         queuePaused = true
         queueGeneration &+= 1
+        queueRetryTask?.cancel()
+        queueRetryTask = nil
         resumeGeneration &+= 1
         guard let live = liveTurn else { return }
         let conn = connectionID
@@ -2396,6 +2425,8 @@ final class SessionDetailViewModel {
     func teardown() {
         viewActive = false
         queueGeneration &+= 1
+        queueRetryTask?.cancel()
+        queueRetryTask = nil
         steeringCapabilityTask?.cancel()
         for index in queuedMessages.indices where queuedMessages[index].isSending {
             queuedMessages[index].isSending = false

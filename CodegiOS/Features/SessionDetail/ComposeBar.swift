@@ -2,8 +2,8 @@ import SwiftUI
 import PhotosUI
 
 /// The pinned bottom compose bar. A leading "+" sits to the left of a growing
-/// multiline field; a send button (which becomes Stop while a turn streams) sits
-/// on the right. Attached-image thumbnails appear above the field. The "agent is
+/// multiline field; send / queue and Stop controls sit on the right.
+/// Attached-image thumbnails appear above the field. The "agent is
 /// working" state is shown as a node at the tail of the transcript timeline (a
 /// thinking tick, a running tool, a streaming reply) — not as a status line here.
 ///
@@ -40,7 +40,7 @@ struct ComposeBar: View {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     private var canSend: Bool {
-        (hasText || !attachments.isEmpty) && !isInFlight
+        hasText || !attachments.isEmpty
     }
     private var remainingSlots: Int {
         max(0, AttachmentPrep.maxCount - attachments.count)
@@ -55,6 +55,14 @@ struct ComposeBar: View {
             if !attachments.isEmpty {
                 AttachmentChipsView(attachments: attachments, onRemove: onRemoveAttachment)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            if isInFlight {
+                Text("Queue a message without stopping the current task.")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             GlassEffectContainer(spacing: 8) {
@@ -78,7 +86,7 @@ struct ComposeBar: View {
                         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.xl, style: .continuous))
                         .hairlineBorder(Theme.Radius.xl)
 
-                    actionButton
+                    actionButtons
                 }
             }
         }
@@ -179,7 +187,22 @@ struct ComposeBar: View {
     }
 
     @ViewBuilder
-    private var actionButton: some View {
+    private var actionButtons: some View {
+        if !isInFlight || canSend {
+            Button(action: send) {
+                Image(systemName: isInFlight ? "text.badge.plus" : "arrow.up")
+                    .font(.system(size: 16, weight: .bold))
+                    .frame(width: 26, height: 26)
+            }
+            .buttonStyle(.glassProminent)
+            .tint(Theme.accent)
+            .clipShape(Circle())
+            .disabled(!canSend)
+            .opacity(canSend ? 1 : 0.5)
+            .transition(.opacity)
+            .accessibilityLabel(isInFlight ? Text("Send to queue") : Text("Send"))
+        }
+
         if isInFlight {
             Button(action: onStop) {
                 Image(systemName: "stop.fill")
@@ -191,19 +214,6 @@ struct ComposeBar: View {
             .clipShape(Circle())
             .transition(.scale.combined(with: .opacity))
             .accessibilityLabel("Stop")
-        } else {
-            Button(action: send) {
-                Image(systemName: "arrow.up")
-                    .font(.system(size: 16, weight: .bold))
-                    .frame(width: 26, height: 26)
-            }
-            .buttonStyle(.glassProminent)
-            .tint(Theme.accent)
-            .clipShape(Circle())
-            .disabled(!canSend)
-            .opacity(canSend ? 1 : 0.5)
-            .transition(.scale.combined(with: .opacity))
-            .accessibilityLabel("Send")
         }
     }
 

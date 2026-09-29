@@ -12,6 +12,11 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Messages composed during a running task can be queued without stopping it.
+  Compatible Codex sessions with live feedback enabled receive queued messages
+  after a tool finishes; ordinary end-of-turn delivery remains the fallback.
+  The queue preserves images, shows delivery receipts, and keeps failed drafts
+  available for retry. Agent-delegation mentions use ordinary prompt delivery.
 - GitHub Actions builds sideloading IPAs (ad-hoc signed, no certificate) and
   attaches them with SHA-256 checksums to releases, with tag and manual
   triggers.

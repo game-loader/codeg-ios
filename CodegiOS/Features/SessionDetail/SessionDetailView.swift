@@ -325,9 +325,23 @@ struct SessionDetailView: View {
                         .transition(.opacity)
                         .zIndex(1)
                 }
+                if !model.queuedMessages.isEmpty || !model.feedbackNotes.isEmpty {
+                    SessionMessageQueueView(
+                        queuedMessages: model.queuedMessages,
+                        feedbackNotes: model.feedbackNotes,
+                        isRunning: model.isInFlight || model.isSubmittingPrompt,
+                        usesToolBoundaryDelivery: model.usesToolBoundaryDelivery,
+                        onRemove: { model.removeQueuedMessage($0) },
+                        onRetry: { model.retryQueuedMessage($0) },
+                        onRestoreFeedback: { model.restoreFeedbackNote($0) },
+                        onDismissFeedback: { model.dismissFeedbackNote($0) }
+                    )
+                    .padding(.horizontal, Theme.Layout.screenHMargin)
+                    .padding(.top, 8)
+                }
                 ComposeBar(
                     text: $model.draft,
-                    isInFlight: model.isInFlight,
+                    isInFlight: model.isInFlight || model.isSubmittingPrompt,
                     notice: model.notice,
                     attachments: model.attachments,
                     canAttachMore: model.canAttachMore,
