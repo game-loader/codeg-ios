@@ -2,14 +2,13 @@ import Foundation
 import XCTest
 @testable import Codeg
 
-// Host-scoped registry also intercepts CodegClient's shared readSession.
+// Host-scoped registry for the explicitly injected HTTP and read sessions.
 // Unknown routes fail closed; no request to the fixture host reaches a network.
 final class RecoveryURLProtocol: URLProtocol, @unchecked Sendable {
     private static let lock = NSLock()
     private static var servers: [String: RecoveryServer] = [:]
     static func register(_ server: RecoveryServer, host: String) {
         lock.lock(); servers[host] = server; lock.unlock()
-        URLProtocol.registerClass(Self.self)
     }
     static func remove(host: String) {
         lock.lock(); servers.removeValue(forKey: host); lock.unlock()
@@ -232,7 +231,8 @@ final class RecoveryHarness {
         config.protocolClasses = [RecoveryURLProtocol.self]
         config.timeoutIntervalForRequest = 3; config.timeoutIntervalForResource = 5
         session = URLSession(configuration: config)
-        let client = CodegClient(baseURL: URL(string: "https://\(host)")!, token: "test", session: session)
+        let client = CodegClient(baseURL: URL(string: "https://\(host)")!, token: "test",
+                                 session: session, readSession: session)
         let factory: () -> any SessionEventStream = { [unowned self] in
             let stream = RecoveryEventStream(snapshot: self.nextSnapshot, deliversSnapshot: self.nextDeliversSnapshot)
             self.streams.append(stream); return stream

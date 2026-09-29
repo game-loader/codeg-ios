@@ -7,11 +7,14 @@ struct CodegClient: Sendable {
     let baseURL: URL
     let token: String
     let session: URLSession
+    private let readTransportSession: URLSession
 
-    init(baseURL: URL, token: String, session: URLSession = CodegClient.defaultSession) {
+    init(baseURL: URL, token: String, session: URLSession = CodegClient.defaultSession,
+         readSession: URLSession = CodegClient.readSession) {
         self.baseURL = baseURL
         self.token = token
         self.session = session
+        self.readTransportSession = readSession
     }
 
     static let defaultSession: URLSession = {
@@ -66,12 +69,12 @@ struct CodegClient: Sendable {
     /// the 30s default — this endpoint normally answers in well under a second,
     /// and it backs the per-server status dots and the editor's Test Connection.
     func health() async throws -> HealthResponse {
-        try await postJSON("health", EmptyBody(), session: Self.readSession)
+        try await postJSON("health", EmptyBody(), session: readTransportSession)
     }
 
     /// All projects/folders known to the server.
     func listFolders() async throws -> [FolderDetail] {
-        try await postJSON("list_all_folder_details", EmptyBody(), session: Self.readSession)
+        try await postJSON("list_all_folder_details", EmptyBody(), session: readTransportSession)
     }
 
     /// Folders shown in the workspace lists: open + `regular` only (the server
@@ -80,7 +83,7 @@ struct CodegClient: Sendable {
     /// — see ``FolderVisibility``. Use ``listFolders()`` (the full set) for by-id
     /// lookups so a conversation in a worktree/chat folder still resolves.
     func listOpenFolders() async throws -> [FolderDetail] {
-        try await postJSON("list_open_folder_details", EmptyBody(), session: Self.readSession)
+        try await postJSON("list_open_folder_details", EmptyBody(), session: readTransportSession)
     }
 
     /// Conversations, optionally filtered by folder / status / search text.
@@ -97,7 +100,7 @@ struct CodegClient: Sendable {
             sortBy: sortBy,
             status: status,
             includeChildren: nil
-        ), session: Self.readSession)
+        ), session: readTransportSession)
     }
 
     /// Full session detail incl. message history.
