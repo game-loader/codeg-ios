@@ -25,10 +25,10 @@ extension CodegClient {
         try await postJSON("read_file_preview", ReadFilePreviewBody(rootPath: rootPath, path: path))
     }
 
-    /// Bounded binary read for images under the folder root. The server returns
-    /// a bare JSON base64 string and confines the relative path to the workspace.
-    func readWorkspaceImage(rootPath: String, path: String, maxBytes: Int) async throws -> String {
-        try await postJSON("read_workspace_file_base64", ReadWorkspaceImageBody(
+    /// Bounded binary read under the folder root. The server returns a bare JSON
+    /// base64 string and confines the relative path to the workspace.
+    func readWorkspaceFileBase64(rootPath: String, path: String, maxBytes: Int) async throws -> String {
+        try await postJSON("read_workspace_file_base64", ReadWorkspaceFileBody(
             rootPath: rootPath, path: path, maxBytes: maxBytes
         ))
     }
@@ -182,7 +182,7 @@ struct ReadFilePreviewBody: Encodable, Sendable {
     let path: String
 }
 
-struct ReadWorkspaceImageBody: Encodable, Sendable {
+struct ReadWorkspaceFileBody: Encodable, Sendable {
     let rootPath: String
     let path: String
     let maxBytes: Int

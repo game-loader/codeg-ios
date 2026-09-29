@@ -369,7 +369,34 @@ struct PaperDetailView: View {
         if paper.pdfPath != nil || paper.textPath != nil {
             EditorSection(title: "Files on the Server") {
                 VStack(alignment: .leading, spacing: 12) {
-                    if let pdf = paper.pdfPath { LabeledValue(label: "PDF", value: pdf, monospaced: true) }
+                    if let pdf = paper.pdfPath, !pdf.isEmpty {
+                        // The attachment path comes from this server's paper
+                        // metadata. Confine the read to its containing directory.
+                        NavigationLink {
+                            WorkspacePDFPreviewView(
+                                client: client,
+                                rootPath: (pdf as NSString).deletingLastPathComponent,
+                                absPath: pdf
+                            )
+                        } label: {
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Label("Open PDF", systemImage: "doc.richtext")
+                                        .foregroundStyle(Theme.accent)
+                                    Text(verbatim: (pdf as NSString).lastPathComponent)
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(Theme.textSecondary)
+                                        .lineLimit(2)
+                                }
+                                Spacer(minLength: 0)
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(Theme.textTertiary)
+                            }
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
                     if let text = paper.textPath { LabeledValue(label: "Text", value: text, monospaced: true) }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

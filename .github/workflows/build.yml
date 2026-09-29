@@ -33,6 +33,15 @@ jobs:
             -o "$RUNNER_TEMP/test-agent-mentions"
           "$RUNNER_TEMP/test-agent-mentions"
 
+      - name: Check PDF preview parsing and file lifecycle
+        # PDFKit is also available on macOS, so the file/parser checks run
+        # without an iOS simulator before compiling the device UI below.
+        run: |
+          set -euo pipefail
+          swiftc CodegiOS/Models/PDFPreviewFile.swift scripts/test-pdf-preview.swift \
+            -o "$RUNNER_TEMP/test-pdf-preview"
+          "$RUNNER_TEMP/test-pdf-preview"
+
       - name: Install XcodeGen 2.46.0 and generate project
         run: |
           set -euo pipefail

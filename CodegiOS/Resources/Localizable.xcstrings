@@ -1,6 +1,66 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Share PDF" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分享 PDF"
+          }
+        }
+      }
+    },
+    "Open PDF" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开 PDF"
+          }
+        }
+      }
+    },
+    "PDF is too large to preview (maximum 20 MB)." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "PDF 文件过大，最多支持预览 20 MB 的文件。"
+          }
+        }
+      }
+    },
+    "This PDF is damaged or could not be opened." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 PDF 已损坏或无法打开。"
+          }
+        }
+      }
+    },
+    "Password-protected PDF" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "受密码保护的 PDF"
+          }
+        }
+      }
+    },
+    "Use Share to open this PDF in an app that supports passwords." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请通过“分享”在支持输入密码的应用中打开此 PDF。"
+          }
+        }
+      }
+    },
     "Delegate to Agent" : {
       "localizations" : {
         "zh-Hans" : {

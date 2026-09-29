@@ -123,6 +123,8 @@ struct FolderFilesView: View {
     private func destination(for item: DirectoryItem) -> some View {
         if item.isDir {
             FolderFilesView(client: client, rootPath: rootPath, dirPath: item.path)
+        } else if PDFPreviewFile.matches(item.path) {
+            WorkspacePDFPreviewView(client: client, rootPath: rootPath, absPath: item.path)
         } else {
             FilePreviewView(client: client, rootPath: rootPath, absPath: item.path)
         }
@@ -311,7 +313,7 @@ struct FilePreviewView: View {
         let relative = FolderPaths.relative(absPath, to: rootPath)
         do {
             if isRasterImage {
-                let encoded = try await client.readWorkspaceImage(
+                let encoded = try await client.readWorkspaceFileBase64(
                     rootPath: rootPath, path: relative, maxBytes: FilePreviewLimits.maxImageBytes
                 )
                 let image = await Task.detached(priority: .userInitiated) {
