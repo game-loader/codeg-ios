@@ -22,6 +22,10 @@ final class SessionDetailViewModel {
     // MARK: - Inputs
 
     private let client: CodegClient
+    private let eventStreamFactory: () -> any SessionEventStream
+    /// Invalidates suspended foreground reads when a send, cancel, navigation,
+    /// or a newer activation takes ownership of the conversation.
+    private var resumeGeneration = 0
 
     /// What this screen is bound to: an existing conversation, or a brand-new
     /// task that adopts its conversation id from the `conversation_linked`
@@ -177,7 +181,7 @@ final class SessionDetailViewModel {
     /// rolled back before then, this row is deleted so no empty conversation
     /// lingers on other clients and the draft's pickers re-open.
     private var draftCreatedConversationID: Int?
-    private var stream: EventStream?
+    private var stream: (any SessionEventStream)?
     /// The outer send pipeline (resolve connection → open stream → prompt).
     private var sendTask: Task<Void, Never>?
     /// The long-lived loop consuming `stream.frames`.
@@ -192,6 +196,7 @@ final class SessionDetailViewModel {
     /// Pending silent reconnect after a transient socket drop (see
     /// `scheduleReconnect`). Cancelled by `closeStream`.
     private var reconnectTask: Task<Void, Never>?
+    private var recoveryTimeoutTask: Task<Void, Never>?
     /// Consecutive reconnect attempts with no frames since the last good one.
     /// Reset whenever the server confirms a fresh attach (a snapshot/replay
     /// frame). Past `maxStreamReconnects`, recovery gives up and reconciles.
@@ -209,8 +214,11 @@ final class SessionDetailViewModel {
     /// that notice without wiping an unrelated one the user hasn't read.
     private var retryNotice: String?
 
-    private init(client: CodegClient, mode: Mode) {
+    private init(client: CodegClient, mode: Mode, eventStreamFactory: (() -> any SessionEventStream)? = nil) {
         self.client = client
+        self.eventStreamFactory = eventStreamFactory ?? {
+            EventStream(baseURL: client.baseURL, token: client.token)
+        }
         self.mode = mode
         switch mode {
         case .existing(let id):
@@ -267,15 +275,15 @@ final class SessionDetailViewModel {
 
     }
 
-    convenience init(client: CodegClient, conversationID: Int) {
-        self.init(client: client, mode: .existing(conversationID: conversationID))
+    convenience init(client: CodegClient, conversationID: Int, eventStreamFactory: (() -> any SessionEventStream)? = nil) {
+        self.init(client: client, mode: .existing(conversationID: conversationID), eventStreamFactory: eventStreamFactory)
     }
 
     /// A brand-new task: `load()` immediately fires the first prompt composed
     /// in the new-task sheet, and the screen adopts the conversation id the
     /// server links — so the very first reply streams like any other turn.
-    convenience init(client: CodegClient, newSession request: NewSessionRequest) {
-        self.init(client: client, mode: .new(request))
+    convenience init(client: CodegClient, newSession request: NewSessionRequest, eventStreamFactory: (() -> any SessionEventStream)? = nil) {
+        self.init(client: client, mode: .new(request), eventStreamFactory: eventStreamFactory)
     }
 
     // MARK: - Derived
@@ -309,7 +317,86 @@ final class SessionDetailViewModel {
     /// Guards the one-time draft option load so a re-run of `.task` can't refetch.
     private var didLoadDraftOptions = false
 
+    /// Called on first appearance and whenever the scene becomes active. Scene
+    /// restoration keeps this model alive, so SwiftUI's original one-shot task
+    /// is not sufficient. Never resend a prompt or replace the compose draft.
+    func resume() async {
+        resumeGeneration &+= 1
+        let generation = resumeGeneration
+        // An accepted prompt may still be awaiting its HTTP response. Let that
+        // pipeline finish before replacing its socket or optimistic state.
+        if let sendTask { await sendTask.value }
+        guard !Task.isCancelled, generation == resumeGeneration else { return }
+        guard phase == .loaded else {
+            await load()
+            return
+        }
+        // A new-task screen can become a bound conversation without changing
+        // `mode`. Use its current ID, not its original entry mode.
+        guard let id = conversationID else { return }
+        let previousLive = liveTurn
+        for attempt in 0..<3 {
+            do {
+                let detail = try await client.conversationDetail(id: id)
+                guard !Task.isCancelled, generation == resumeGeneration,
+                      liveTurn === previousLive else { return }
+                let serverSaysLive = detail.inFlightUserTurnId != nil
+                    || detail.summary.status == .inProgress
+
+                if let live = liveTurn, live.isStreaming {
+                    // Do not overwrite a locally streamed reply with a lagging
+                    // disk transcript. A fresh attach replaces it atomically
+                    // from the full snapshot, or settles a missed completion.
+                    let found = try await client.findConnection(
+                        conversationId: id, sessionId: detail.summary.externalId,
+                        agentType: detail.summary.agentType)
+                    guard !Task.isCancelled, generation == resumeGeneration,
+                          liveTurn === live else { return }
+                    summary = detail.summary
+                    sessionStats = detail.sessionStats ?? sessionStats
+                    if let conn = found?.connectionId {
+                        connectionID = conn
+                        streamReconnects = 0
+                        restartRecoveryStream(into: live, connectionID: conn)
+                    } else {
+                        isTurnActive = true
+                        await reconcileOrFail(live: live, reason: nil)
+                    }
+                    return
+                }
+
+                summary = detail.summary
+                sessionStats = detail.sessionStats ?? sessionStats
+                // A just-finished reply may not have reached disk yet. Keep it
+                // visible until the existing reconciliation loop confirms it.
+                if let live = liveTurn, live.hasContent, !serverSaysLive,
+                   !transcriptAdvanced(detail.turns, from: turns) {
+                    await refreshAfterTurn(reconciling: live)
+                    return
+                }
+                closeStream()
+                isTurnActive = false
+                clearInteractivePrompts()
+                clearRetryNotice()
+                turns = detail.turns
+                pendingUserTurns.removeAll()
+                liveTurn = nil
+                liveTurnFromReattach = false
+                sendState = .idle
+                requestScrollToBottom()
+                await reattachIfLive(serverSaysLive: serverSaysLive)
+                return
+            } catch {
+                guard !Task.isCancelled, generation == resumeGeneration,
+                      liveTurn === previousLive else { return }
+                if attempt == 2 { notice = Self.describe(error) }
+                else { try? await Task.sleep(for: .seconds(1)) }
+            }
+        }
+    }
+
     func load() async {
+        let generation = resumeGeneration
         switch mode {
         case .existing(let id):
             phase = .loading
@@ -318,6 +405,7 @@ final class SessionDetailViewModel {
                 async let foldersReq = client.listFolders()
                 let detail = try await detailReq
                 let folders = try await foldersReq
+                guard !Task.isCancelled, generation == resumeGeneration else { return }
 
                 summary = detail.summary
                 turns = detail.turns
@@ -351,6 +439,7 @@ final class SessionDetailViewModel {
                     || detail.summary.status == .inProgress
                 await reattachIfLive(serverSaysLive: serverSaysLive)
             } catch {
+                guard !Task.isCancelled, generation == resumeGeneration else { return }
                 phase = .failed(Self.describe(error))
             }
 
@@ -679,6 +768,7 @@ final class SessionDetailViewModel {
         // Identity comes from the loaded summary (existing conversation) or the
         // new-task request; without either the screen isn't ready to send.
         guard summary != nil || newRequest != nil else { return }
+        resumeGeneration &+= 1
         // A draft (no linked summary yet) needs a folder + agent before it can
         // connect; lock the pickers the moment its first send begins.
         if summary == nil {
@@ -963,7 +1053,7 @@ final class SessionDetailViewModel {
         streamReconnects = 0   // fresh send → fresh reconnect budget
         streamGeneration &+= 1
         let generation = streamGeneration
-        let newStream = EventStream(baseURL: client.baseURL, token: client.token)
+        let newStream = eventStreamFactory()
         stream = newStream
         newStream.start()
 
@@ -1003,9 +1093,9 @@ final class SessionDetailViewModel {
     /// frames onto the live turn, and finalizes on terminal frames. A superseded
     /// consumer (its `generation` no longer current) ignores its terminal frames
     /// so it can't end a turn that a newer stream now owns.
-    private func consume(stream: EventStream, connectionID conn: String, live: LiveTurn, generation: Int) async {
+    private func consume(stream: any SessionEventStream, connectionID conn: String, live: LiveTurn, generation: Int) async {
         for await frame in stream.frames {
-            if Task.isCancelled { return }
+            guard !Task.isCancelled, generation == streamGeneration else { return }
             let isCurrent = generation == streamGeneration
             switch frame {
             case .ready:
@@ -1014,8 +1104,9 @@ final class SessionDetailViewModel {
                 // prompt is fired. Otherwise acp_prompt (a separate HTTP request)
                 // can reach the server before the WS attach is registered, and the
                 // first streamed events would be delivered to no subscriber.
-                stream.attach(subscriptionId: subscriptionID, connectionId: conn)
+                stream.attach(subscriptionId: subscriptionID, connectionId: conn, sinceSeq: nil)
             case .snapshot(let snap):
+                recoveryTimeoutTask?.cancel()
                 // Attach confirmed — a healthy socket. Reset the reconnect budget
                 // and (for the initial connect) release the waiting send.
                 streamReconnects = 0
@@ -1027,10 +1118,30 @@ final class SessionDetailViewModel {
                 // with no way to approve. Mirrors `consumeReattach` + the web client.
                 // Skipped during the INITIAL attach handshake (readyContinuation set)
                 // — that snapshot is the pre-prompt state and carries no live card.
-                if isCurrent, readyContinuation == nil, isTurnActive { restorePending(from: snap) }
+                if readyContinuation == nil, isTurnActive {
+                    if let rebuilt = buildLiveTurn(from: snap) {
+                        live.replaceContent(from: rebuilt)
+                        if pendingUserTurns.isEmpty { liveTurnFromReattach = true }
+                        restorePending(from: snap)
+                        sendState = live.activeToolTitle.map { .running(tool: $0) } ?? .thinking
+                        requestScrollToBottom()
+                    } else {
+                        // The turn finished while we were away: no new terminal
+                        // event will arrive. Pull its persisted final reply now.
+                        finalize(live: live, stopReason: "end_turn")
+                        return
+                    }
+                }
                 if isCurrent { resumeReady(throwing: nil) }
-            case .replay:
+            case .replay(let events):
+                recoveryTimeoutTask?.cancel()
                 streamReconnects = 0
+                if readyContinuation == nil {
+                    for envelope in events {
+                        guard generation == streamGeneration, isTurnActive else { break }
+                        handle(event: envelope.event, live: live)
+                    }
+                }
                 if isCurrent { resumeReady(throwing: nil) }
             case .pong:
                 break
@@ -1094,10 +1205,11 @@ final class SessionDetailViewModel {
     /// Additive: it does not touch the send flow. The moment the user sends,
     /// `openStream` supersedes this stream (a generation bump ends this consumer).
     func reattachIfLive(serverSaysLive: Bool = false) async {
+        let recoveryGeneration = resumeGeneration
         guard let id = conversationID, summary != nil else { return }
         // Nothing to do if we're already streaming locally, or for a finished session.
         guard liveTurn == nil, !isInFlight, stream == nil else { return }
-        if summary?.status == .completed || summary?.status == .cancelled { return }
+        if !serverSaysLive, summary?.status == .completed || summary?.status == .cancelled { return }
 
         // Discover the live ACP connection. When the server reported a turn in
         // flight (`serverSaysLive`), a single discovery miss is almost always a
@@ -1112,7 +1224,8 @@ final class SessionDetailViewModel {
         var conn: String?
         for attempt in 0..<attempts {
             // Bail if a send (or another reattach) started while we awaited.
-            guard liveTurn == nil, !isInFlight, stream == nil else { return }
+            guard !Task.isCancelled, recoveryGeneration == resumeGeneration,
+                  liveTurn == nil, !isInFlight, stream == nil else { return }
             if let found = try? await client.findConnection(
                 conversationId: id,
                 sessionId: summary?.externalId,
@@ -1126,6 +1239,7 @@ final class SessionDetailViewModel {
                 try? await Task.sleep(for: .milliseconds(400 * (attempt + 1)))
             }
         }
+        guard !Task.isCancelled, recoveryGeneration == resumeGeneration else { return }
 
         guard let conn else {
             // The server claimed a live turn but no connection ever surfaced — it
@@ -1142,9 +1256,17 @@ final class SessionDetailViewModel {
         closeStream()
         streamGeneration &+= 1
         let generation = streamGeneration
-        let newStream = EventStream(baseURL: client.baseURL, token: client.token)
+        let newStream = eventStreamFactory()
+        // Gives pre-snapshot failures the same bounded reconnect path as an
+        // established stream; previously those failures silently stranded it.
+        liveTurn = LiveTurn()
+        isTurnActive = true
+        streamReconnects = 0
         stream = newStream
         newStream.start()
+        if let live = liveTurn {
+            armRecoveryTimeout(live: live, connectionID: conn, generation: generation)
+        }
         consumerTask = Task { [weak self] in
             await self?.consumeReattach(stream: newStream, connectionID: conn, generation: generation, serverSaysLive: serverSaysLive)
         }
@@ -1156,9 +1278,11 @@ final class SessionDetailViewModel {
     /// than the snapshot we loaded a beat too early. No-op if a turn has since
     /// started locally — that path owns the transcript.
     private func reconcileAfterMissedLive() async {
+        let generation = resumeGeneration
         guard let id = conversationID, liveTurn == nil, !isInFlight, stream == nil else { return }
         guard let detail = try? await client.conversationDetail(id: id) else { return }
-        guard liveTurn == nil, !isInFlight, stream == nil else { return }
+        guard !Task.isCancelled, generation == resumeGeneration,
+              liveTurn == nil, !isInFlight, stream == nil else { return }
         summary = detail.summary
         turns = detail.turns
         sessionStats = detail.sessionStats ?? sessionStats
@@ -1169,16 +1293,17 @@ final class SessionDetailViewModel {
     /// continuation to release and it BUILDS the live turn from the attach snapshot
     /// rather than being handed one. If the snapshot shows nothing in flight, it
     /// closes the stream (idle connection — leave it alone).
-    private func consumeReattach(stream: EventStream, connectionID conn: String, generation: Int, serverSaysLive: Bool = false) async {
-        var live: LiveTurn?
+    private func consumeReattach(stream: any SessionEventStream, connectionID conn: String, generation: Int, serverSaysLive: Bool = false) async {
+        var live = liveTurn
         for await frame in stream.frames {
             if Task.isCancelled { return }
             // A send (or another reattach) superseded us — let go; the new stream owns the turn.
             guard generation == streamGeneration else { return }
             switch frame {
             case .ready:
-                stream.attach(subscriptionId: subscriptionID, connectionId: conn)
+                stream.attach(subscriptionId: subscriptionID, connectionId: conn, sinceSeq: nil)
             case .snapshot(let snap):
+                recoveryTimeoutTask?.cancel()
                 // A snapshot means the socket is healthy — reset the reconnect budget.
                 streamReconnects = 0
                 if let rebuilt = buildLiveTurn(from: snap) {
@@ -1197,6 +1322,11 @@ final class SessionDetailViewModel {
                     // Idle connection: nothing in flight. Release it.
                     closeStream()
                     connectionID = nil
+                    isTurnActive = false
+                    liveTurn = nil
+                    liveTurnFromReattach = false
+                    sendState = .idle
+                    clearInteractivePrompts()
                     // If the server had claimed a live turn at load, it finished
                     // between the detail fetch and this snapshot — reconcile so the
                     // final reply isn't missing from the (now stale) transcript.
@@ -1204,6 +1334,7 @@ final class SessionDetailViewModel {
                     return
                 }
             case .replay(let events):
+                recoveryTimeoutTask?.cancel()
                 if let live { for env in events { handle(event: env.event, live: live) } }
             case .pong:
                 break
@@ -1218,14 +1349,14 @@ final class SessionDetailViewModel {
                 if reason == "connection_gone" {
                     Task { [weak self] in await self?.reconcileOrFail(live: live, reason: reason) }
                 } else {
-                    reconnectStream(into: live, connectionID: conn, reason: reason, reattach: true)
+                    reconnectStream(into: live, connectionID: conn, reason: reason)
                 }
                 return
             case .closed(let reason):
                 // A socket drop while a turn is live is a transport blip — re-attach
                 // silently. (Before the snapshot there's nothing to recover.)
                 if isTurnActive, let live {
-                    reconnectStream(into: live, connectionID: conn, reason: reason, reattach: true)
+                    reconnectStream(into: live, connectionID: conn, reason: reason)
                 }
                 return
             }
@@ -1278,16 +1409,19 @@ final class SessionDetailViewModel {
         if let p = snap.pendingPermission {
             pendingPermission = PendingPermission(requestId: p.requestId, toolCall: p.toolCall,
                                                   options: p.options, queued: p.queued)
+        } else {
+            pendingPermission = nil
         }
         if let q = snap.pendingQuestion {
             pendingQuestion = PendingQuestion(questionId: q.questionId, questions: q.questions)
+        } else {
+            pendingQuestion = nil
         }
         // Set OR clear: the attach snapshot is the connection's authoritative
         // pending state, so an approval that another client resolved while we were
         // reconnecting must not leave a stale, still-actionable card behind
         // (answering it would post a decision for an approval that no longer
-        // exists). The permission/question restores above deliberately keep their
-        // existing set-only behavior — changing those is out of scope here.
+        // exists). Permissions and questions use the same authoritative rule.
         if let p = snap.pendingPlanApproval {
             pendingPlanApproval = PendingPlanApproval(
                 approvalId: p.approvalId, toolCallId: p.toolCallId, planMarkdown: p.planMarkdown)
@@ -1647,10 +1781,9 @@ final class SessionDetailViewModel {
     /// `maxStreamReconnects` consecutive failures with no frames it gives up and
     /// reconciles against the server instead of looping forever.
     ///
-    /// `reattach` selects the consumer: the send path (`consume`, feeding the
-    /// existing `live`) versus the cross-client reattach path (`consumeReattach`,
-    /// which rebuilds `live` from the fresh snapshot).
-    private func reconnectStream(into live: LiveTurn, connectionID conn: String, reason: String?, reattach: Bool = false) {
+    /// Both local sends and cross-client attaches restore the complete snapshot
+    /// into their existing turn, preserving the correct transcript baseline.
+    private func reconnectStream(into live: LiveTurn, connectionID conn: String, reason: String?) {
         guard liveTurn === live, isTurnActive else { return }
         streamReconnects += 1
         guard streamReconnects <= Self.maxStreamReconnects else {
@@ -1670,16 +1803,31 @@ final class SessionDetailViewModel {
             guard let self, !Task.isCancelled,
                   self.liveTurn === live, self.isTurnActive,
                   generation == self.streamGeneration else { return }
-            let newStream = EventStream(baseURL: self.client.baseURL, token: self.client.token)
-            self.stream = newStream
-            newStream.start()
-            self.consumerTask = Task { [weak self] in
-                if reattach {
-                    await self?.consumeReattach(stream: newStream, connectionID: conn, generation: generation)
-                } else {
-                    await self?.consume(stream: newStream, connectionID: conn, live: live, generation: generation)
-                }
-            }
+            self.restartRecoveryStream(into: live, connectionID: conn)
+        }
+    }
+
+    private func restartRecoveryStream(into live: LiveTurn, connectionID conn: String) {
+        closeStream()
+        consumerTask?.cancel()
+        isTurnActive = true
+        let generation = streamGeneration
+        let newStream = eventStreamFactory()
+        stream = newStream
+        newStream.start()
+        armRecoveryTimeout(live: live, connectionID: conn, generation: generation)
+        consumerTask = Task { [weak self] in
+            await self?.consume(stream: newStream, connectionID: conn, live: live, generation: generation)
+        }
+    }
+
+    private func armRecoveryTimeout(live: LiveTurn, connectionID conn: String, generation: Int) {
+        recoveryTimeoutTask?.cancel()
+        recoveryTimeoutTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(12)) } catch { return }
+            guard let self, generation == self.streamGeneration,
+                  self.liveTurn === live, self.isTurnActive else { return }
+            self.reconnectStream(into: live, connectionID: conn, reason: nil)
         }
     }
 
@@ -1690,15 +1838,19 @@ final class SessionDetailViewModel {
     /// error — and even then the partial streamed output stays on screen.
     private func reconcileOrFail(live: LiveTurn, reason: String?) async {
         guard liveTurn === live, isTurnActive else { return }
+        let generation = resumeGeneration
         streamReconnects = 0
         if let id = conversationID,
            let detail = try? await client.conversationDetail(id: id),
-           liveTurn === live, isTurnActive {
+           !Task.isCancelled, generation == resumeGeneration, liveTurn === live, isTurnActive {
             summary = detail.summary
             sessionStats = detail.sessionStats ?? sessionStats
             // Adopt only a transcript that genuinely advanced past our pre-turn
             // baseline AND ends with a real reply — never a stale read.
-            if detail.turns.count > turns.count, Self.transcriptHasReply(detail.turns) {
+            if Self.transcriptHasReply(detail.turns),
+               transcriptAdvanced(detail.turns, from: turns)
+                || (liveTurnFromReattach && detail.inFlightUserTurnId == nil
+                    && detail.summary.status != .inProgress) {
                 isTurnActive = false
                 clearInteractivePrompts()
                 turns = detail.turns
@@ -1710,6 +1862,8 @@ final class SessionDetailViewModel {
                 return
             }
         }
+        guard !Task.isCancelled, generation == resumeGeneration,
+              liveTurn === live, isTurnActive else { return }
         failLive(live, message: "Lost the connection. Your reply may still be running — reopen the session to check.")
     }
 
@@ -1825,17 +1979,18 @@ final class SessionDetailViewModel {
         // turn's assistant reply would satisfy `transcriptHasReply` and we'd adopt
         // it, dropping the reply we just streamed. `turns` isn't mutated elsewhere
         // between finalize and this reconcile.
-        let baselineCount = turns.count
+        let baselineTurns = turns
+        let generation = resumeGeneration
 
         for attempt in 0..<5 {
             // If the user started another turn while we were reconciling, that
             // newer turn now owns turns/pendingUserTurns/liveTurn; bail so we
             // don't wipe its in-flight state (its own finalize reconciles later).
-            guard liveTurn === live else { return }
+            guard !Task.isCancelled, generation == resumeGeneration, liveTurn === live else { return }
             do {
                 let detail = try await client.conversationDetail(id: id)
                 // Re-check after the await — a new turn may have begun during it.
-                guard liveTurn === live else { return }
+                guard !Task.isCancelled, generation == resumeGeneration, liveTurn === live else { return }
                 // Identity/stats are always safe to adopt, even before the reply
                 // is queryable, so the header stays fresh while we wait.
                 summary = detail.summary
@@ -1846,7 +2001,11 @@ final class SessionDetailViewModel {
                 // merely ends with an older reply can't masquerade as ours) and —
                 // when there's a streamed reply to protect — end with a non-empty
                 // assistant turn.
-                let advanced = detail.turns.count > baselineCount
+                // A restored partial assistant turn may be updated in place:
+                // the count stays equal while its content becomes complete.
+                let advanced = transcriptAdvanced(detail.turns, from: baselineTurns)
+                    || (liveTurnFromReattach && detail.inFlightUserTurnId == nil
+                        && detail.summary.status != .inProgress)
                 if advanced, !mustPreserveReply || Self.transcriptHasReply(detail.turns) {
                     turns = detail.turns
                     pendingUserTurns.removeAll()
@@ -1873,6 +2032,7 @@ final class SessionDetailViewModel {
         // into the authoritative `turns` so it survives a subsequent send instead
         // of living only in the single `liveTurn` slot; a later reconcile or full
         // load replaces it with the server's copy.
+        guard !Task.isCancelled, generation == resumeGeneration else { return }
         promoteUnreconciled(live, keepingError: true)
     }
 
@@ -1935,9 +2095,15 @@ final class SessionDetailViewModel {
         }
     }
 
+    private func transcriptAdvanced(_ candidate: [MessageTurn], from baseline: [MessageTurn]) -> Bool {
+        candidate.count > baseline.count
+            || (liveTurnFromReattach && candidate.count == baseline.count && candidate != baseline)
+    }
+
     // MARK: - Cancel
 
     func cancel() {
+        resumeGeneration &+= 1
         guard let live = liveTurn else { return }
         let conn = connectionID
         isTurnActive = false
@@ -1967,6 +2133,8 @@ final class SessionDetailViewModel {
         // Drop any pending silent reconnect — a deliberate close ends recovery.
         reconnectTask?.cancel()
         reconnectTask = nil
+        recoveryTimeoutTask?.cancel()
+        recoveryTimeoutTask = nil
         stream?.detach(subscriptionId: subscriptionID)
         stream?.close()
         stream = nil
@@ -1974,6 +2142,8 @@ final class SessionDetailViewModel {
 
     /// Tear down all live work — call from `.onDisappear` / deinit paths.
     func teardown() {
+        resumeGeneration &+= 1
+        isTurnActive = false
         sendTask?.cancel()
         sendTask = nil
         consumerTask?.cancel()

@@ -20,6 +20,7 @@ struct SessionDetailView: View {
     @State private var model: SessionDetailViewModel
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showRename = false
     @State private var renameText = ""
     @State private var showDetails = false
@@ -164,7 +165,10 @@ struct SessionDetailView: View {
                 SessionDetailsSheet(summary: summary, stats: model.sessionStats, folder: model.folder)
             }
         }
-        .task { await model.load() }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            await model.resume()
+        }
         .onDisappear { model.teardown() }
         // Haptics — the app's marquee "felt" moments, all keyed off existing
         // @Observable state. Vocabulary: success = a reply completed, error = it

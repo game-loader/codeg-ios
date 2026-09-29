@@ -74,7 +74,15 @@ enum WSServerMessage: Decodable, Sendable {
 /// `frames`. Lifecycle: `start()` → await `.ready` → `attach(...)` → consume
 /// `.event` frames → `close()`. Reconnection is the caller's responsibility
 /// (Phase 1 reconnects by creating a fresh stream).
-final class EventStream: @unchecked Sendable {
+protocol SessionEventStream: AnyObject, Sendable {
+    var frames: AsyncStream<EventStream.Frame> { get }
+    func start()
+    func attach(subscriptionId: String, connectionId: String, sinceSeq: UInt64?)
+    func detach(subscriptionId: String)
+    func close()
+}
+
+final class EventStream: SessionEventStream, @unchecked Sendable {
     enum Frame: Sendable {
         case ready
         case snapshot(LiveSessionSnapshot)

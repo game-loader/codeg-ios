@@ -181,6 +181,16 @@ final class LiveTurn: Identifiable {
         self.id = id
     }
 
+    /// A reconnect snapshot is the entire reply, not another delta. Keep this
+    /// turn's identity (and its consumer) while replacing the missing prefix.
+    func replaceContent(from snapshot: LiveTurn) {
+        flushAllText()
+        segments = snapshot.segments
+        toolIndex = snapshot.toolIndex
+        livePlan = snapshot.livePlan
+        if let error = snapshot.errorMessage { errorMessage = error }
+    }
+
     /// True before any content has streamed — used to show a "waiting" shimmer.
     var isEmpty: Bool { segments.isEmpty && errorMessage == nil && livePlan.isEmpty }
 
