@@ -227,6 +227,11 @@ struct CodegClient: Sendable {
     }
 
     /// Cancel the in-flight turn on a connection.
+    func submitSessionFeedback(connectionId: String, text: String, blocks: [PromptInputBlock]?) async throws -> SessionFeedback {
+        try await postJSON("submit_session_feedback", SubmitSessionFeedbackBody(
+            connectionId: connectionId, text: text, blocks: blocks))
+    }
+
     func cancel(connectionId: String) async throws {
         _ = try await send("acp_cancel", body: ConnectionIdBody(connectionId: connectionId))
     }

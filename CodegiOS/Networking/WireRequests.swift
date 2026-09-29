@@ -32,6 +32,12 @@ enum PromptInputBlock: Encodable, Sendable {
 
 struct EmptyBody: Encodable, Sendable {}
 
+struct SubmitSessionFeedbackBody: Encodable, Sendable {
+    let connectionId: String
+    let text: String
+    let blocks: [PromptInputBlock]?
+}
+
 struct ListConversationsBody: Encodable, Sendable {
     var folderIds: [Int]?
     var agentType: String?

@@ -56,6 +56,7 @@ struct SessionModeState: Hashable, Sendable, Decodable {
 /// both to load the sheet and to reconcile after an apply. Decode-only; the many
 /// other snapshot fields are ignored.
 struct SessionSnapshot: Hashable, Sendable, Decodable {
+    let nativeSteeringAvailable: Bool
     let modes: SessionModeState?
     let currentMode: String?
     let configOptions: [SessionConfigOption]?
@@ -65,11 +66,12 @@ struct SessionSnapshot: Hashable, Sendable, Decodable {
     let availableCommands: [AvailableCommandInfo]
 
     private enum CodingKeys: String, CodingKey {
-        case modes, currentMode, configOptions, selectorsReady, availableCommands
+        case modes, currentMode, configOptions, selectorsReady, availableCommands, nativeSteeringAvailable
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        nativeSteeringAvailable = try c.decodeIfPresent(Bool.self, forKey: .nativeSteeringAvailable) ?? false
         modes = try c.decodeIfPresent(SessionModeState.self, forKey: .modes)
         currentMode = try c.decodeIfPresent(String.self, forKey: .currentMode)
         configOptions = try c.decodeIfPresent([SessionConfigOption].self, forKey: .configOptions)

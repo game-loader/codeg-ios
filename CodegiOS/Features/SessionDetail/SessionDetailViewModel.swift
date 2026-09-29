@@ -94,6 +94,18 @@ final class SessionDetailViewModel {
     /// "request changes" decision (see ``answerPlanApproval(decision:feedback:)``).
     private var pendingPlanFollowUp: String?
 
+    private(set) var queuedMessages: [QueuedSessionMessage] = []
+    private(set) var feedbackNotes: [SessionFeedback] = []
+    private(set) var usesToolBoundaryDelivery = false
+    private var consumedFeedback: Set<String> = []
+    private var dismissedFeedback: Set<String> = []
+    private var completedQueueTools: Set<String> = []
+    private var queueGeneration = 0
+    private var queueDeliveryTask: Task<Void, Never>?
+    private var queuePaused = false
+    private var viewActive = true
+    private var steeringCapabilityTask: Task<Void, Never>?
+
     private(set) var summary: ConversationSummary?
     private(set) var sessionStats: SessionStats?
     private(set) var folder: FolderDetail?
@@ -328,6 +340,8 @@ final class SessionDetailViewModel {
     /// restoration keeps this model alive, so SwiftUI's original one-shot task
     /// is not sufficient. Never resend a prompt or replace the compose draft.
     func resume() async {
+        viewActive = true
+        defer { sendQueuedHeadIfIdle() }
         resumeGeneration &+= 1
         let generation = resumeGeneration
         // Only pre-submit setup owns the attach handshake. Once POST is in
@@ -403,6 +417,7 @@ final class SessionDetailViewModel {
     }
 
     func load() async {
+        viewActive = true
         let generation = resumeGeneration
         switch mode {
         case .existing(let id):
@@ -761,6 +776,132 @@ final class SessionDetailViewModel {
         attachments.removeAll { $0.id == id }
     }
 
+    // MARK: - Messages queued during a running turn
+
+    func removeQueuedMessage(_ id: UUID) {
+        queuedMessages.removeAll { $0.id == id && !$0.isSending }
+        sendQueuedHeadIfIdle()
+    }
+
+    func retryQueuedMessage(_ id: UUID) {
+        guard let index = queuedMessages.firstIndex(where: { $0.id == id }),
+              !queuedMessages[index].isSending, queueDeliveryTask == nil else { return }
+        queuedMessages[index].failure = nil
+        queuePaused = false
+        sendQueuedHeadIfIdle()
+    }
+
+    func dismissFeedbackNote(_ id: String) {
+        dismissedFeedback.insert(id)
+        feedbackNotes.removeAll { $0.id == id }
+    }
+
+    func restoreFeedbackNote(_ id: String) {
+        guard let item = feedbackNotes.first(where: { $0.id == id && $0.status == "pending" }) else { return }
+        draft = draft.isEmpty ? item.text : draft + "\n\n" + item.text
+        dismissFeedbackNote(id)
+    }
+
+    private func mergeFeedback(_ item: SessionFeedback) {
+        guard !dismissedFeedback.contains(item.id) else { return }
+        var latest = item
+        if consumedFeedback.contains(item.id) { latest.status = "delivered" }
+        if let index = feedbackNotes.firstIndex(where: { $0.id == item.id }) {
+            // A late HTTP response/snapshot cannot turn received back to waiting.
+            if feedbackNotes[index].status == "delivered" { latest.status = "delivered" }
+            feedbackNotes[index] = latest
+        } else {
+            feedbackNotes.append(latest)
+        }
+    }
+
+    private func restoreFeedback(from snapshot: LiveSessionSnapshot, connectionID conn: String) {
+        for item in snapshot.feedback { mergeFeedback(item) }
+        usesToolBoundaryDelivery = false
+        steeringCapabilityTask?.cancel()
+        guard agentTypeForUI == .codex, snapshot.nativeSteeringAvailable else { return }
+        steeringCapabilityTask = Task { [weak self] in
+            guard let self else { return }
+            let enabled = (try? await self.client.feedbackEnabled()) ?? false
+            guard !Task.isCancelled, self.connectionID == conn, self.viewActive else { return }
+            self.usesToolBoundaryDelivery = enabled
+        }
+    }
+
+    private func sendQueuedHeadIfIdle() {
+        guard viewActive, !queuePaused, phase == .loaded,
+              !isInFlight, !isSubmittingPrompt, queueDeliveryTask == nil,
+              let first = queuedMessages.first, !first.isSending, first.failure == nil else { return }
+        queuedMessages[0].isSending = true
+        send(overrideText: first.text, queuedMessage: first)
+    }
+
+    private func deliverQueueAtToolBoundary(id: String, status: String?) {
+        guard status == "completed" || status == "failed",
+              !id.isEmpty, completedQueueTools.insert(id).inserted,
+              viewActive, !queuePaused, isTurnActive, agentTypeForUI == .codex,
+              queueDeliveryTask == nil, let conn = connectionID,
+              let head = queuedMessages.first, head.failure == nil, !head.isSending, head.canSteer else { return }
+        // Only drafts present at this boundary are admitted. New input waits for
+        // another tool; repeated/replayed completion events cannot resubmit it.
+        let ids = queuedMessages.map(\.id)
+        let generation = queueGeneration
+        queueDeliveryTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.queueDeliveryTask = nil
+                self.sendQueuedHeadIfIdle()
+            }
+            // Gate on the backend's reviewed adapter capability, never just the
+            // Codex name. Re-read here since the initial snapshot can be early.
+            do {
+                let enabled = try await self.client.feedbackEnabled()
+                let snapshot = try await self.client.connectionSnapshot(connectionId: conn)
+                guard self.viewActive, self.connectionID == conn,
+                      self.queueGeneration == generation, self.isTurnActive else { return }
+                self.usesToolBoundaryDelivery = enabled && snapshot?.nativeSteeringAvailable == true
+                guard self.usesToolBoundaryDelivery else { return }
+            } catch { return } // capability lookup failure leaves ordinary FIFO delivery intact
+
+            for id in ids {
+                guard self.viewActive, !self.queuePaused, self.isTurnActive,
+                      self.queueGeneration == generation, self.connectionID == conn,
+                      let index = self.queuedMessages.firstIndex(where: { $0.id == id }) else { break }
+                let item = self.queuedMessages[index]
+                guard item.failure == nil, !item.isSending, item.canSteer else { break }
+                self.queuedMessages[index].isSending = true
+                do {
+                    let note = try await self.client.submitSessionFeedback(
+                        connectionId: conn, text: item.steeringText,
+                        blocks: item.attachments.isEmpty ? nil : item.blocks)
+                    // Even if completion/cancel won the race, acceptance owns
+                    // this exact draft. Never send it a second time as a prompt.
+                    self.queuedMessages.removeAll { $0.id == id }
+                    if self.connectionID == conn { self.mergeFeedback(note) }
+                    if note.status != "delivered" {
+                        self.usesToolBoundaryDelivery = false
+                        break // backend downgraded to cooperative feedback
+                    }
+                } catch {
+                    if let current = self.queuedMessages.firstIndex(where: { $0.id == id }) {
+                        self.queuedMessages[current].isSending = false
+                        if case APIError.server(_, _, let message, let detail) = error,
+                           (message + " " + (detail ?? "")).contains("no active turn to send feedback to") {
+                            // Rejected without consumption; end-of-turn FIFO owns it.
+                        } else if case APIError.server(_, _, let message, let detail) = error,
+                                  (message + " " + (detail ?? "")).contains("live feedback is disabled") {
+                            self.usesToolBoundaryDelivery = false
+                        } else {
+                            self.queuedMessages[current].failure = String(localized: "Delivery unconfirmed. Check the conversation before retrying.")
+                            self.notice = Self.describe(error)
+                        }
+                    }
+                    break
+                }
+            }
+        }
+    }
+
     // MARK: - Send
 
     /// Send the composer's draft — or, with `overrideText`, a prompt the app itself
@@ -768,14 +909,28 @@ final class SessionDetailViewModel {
     /// which Grok expects as a follow-up turn). An override never touches the
     /// composer's draft or attachments, so a message the user was typing survives;
     /// a rejected send still restores the text into the composer so it isn't lost.
-    func send(overrideText: String? = nil) {
+    func send(overrideText: String? = nil, queuedMessage: QueuedSessionMessage? = nil) {
         let text = (overrideText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
-        let sending = overrideText == nil ? attachments : []
+        let sending = queuedMessage?.attachments ?? (overrideText == nil ? attachments : [])
+        if overrideText == nil, !text.isEmpty || !sending.isEmpty,
+           isInFlight || isSubmittingPrompt || !queuedMessages.isEmpty || queueDeliveryTask != nil {
+            queuedMessages.append(QueuedSessionMessage(text: text, attachments: sending))
+            draft = ""
+            attachments = []
+            queuePaused = false
+            sendQueuedHeadIfIdle()
+            return
+        }
         guard (!text.isEmpty || !sending.isEmpty), !isInFlight else { return }
         // Identity comes from the loaded summary (existing conversation) or the
         // new-task request; without either the screen isn't ready to send.
         guard summary != nil || newRequest != nil else { return }
         resumeGeneration &+= 1
+        queueGeneration &+= 1
+        completedQueueTools.removeAll()
+        feedbackNotes.removeAll()
+        consumedFeedback.removeAll()
+        dismissedFeedback.removeAll()
         // A draft (no linked summary yet) needs a folder + agent before it can
         // connect; lock the pickers the moment its first send begins.
         if summary == nil {
@@ -799,7 +954,7 @@ final class SessionDetailViewModel {
         if !text.isEmpty { blocks.append(.text(text)) }
         blocks.append(contentsOf: sending.map { $0.optimisticBlock })
         let userTurn = MessageTurn(
-            id: "pending-\(UUID().uuidString)",
+            id: queuedMessage.map { "queued-\($0.id)" } ?? "pending-\(UUID().uuidString)",
             role: .user,
             blocks: blocks,
             timestamp: Date()
@@ -835,12 +990,23 @@ final class SessionDetailViewModel {
         sendTask = Task { [weak self] in
             await self?.runSend(text: text, attachments: sending, live: live, userTurnID: userTurnID)
             guard let self, self.sendOperationID == operationID else { return }
+            if let item = queuedMessage,
+               let index = self.queuedMessages.firstIndex(where: { $0.id == item.id }),
+               self.queuedMessages[index].isSending {
+                if Task.isCancelled {
+                    self.queuedMessages[index].isSending = false
+                    self.queuedMessages[index].failure = String(localized: "Delivery unconfirmed. Check the conversation before retrying.")
+                } else {
+                    self.queuedMessages.remove(at: index)
+                }
+            }
             self.sendTask = nil
             self.sendOperationID = nil
             if self.recoverAfterSubmission {
                 self.recoverAfterSubmission = false
                 await self.resume()
             }
+            self.sendQueuedHeadIfIdle()
         }
     }
 
@@ -1133,6 +1299,7 @@ final class SessionDetailViewModel {
                 submissionAtAttach = promptSubmissionID
                 stream.attach(subscriptionId: subscriptionID, connectionId: conn, sinceSeq: nil)
             case .snapshot(let snap):
+                restoreFeedback(from: snap, connectionID: conn)
                 recoveryTimeoutTask?.cancel()
                 // Attach confirmed — a healthy socket. Reset the reconnect budget
                 // and (for the initial connect) release the waiting send.
@@ -1349,6 +1516,7 @@ final class SessionDetailViewModel {
             case .ready:
                 stream.attach(subscriptionId: subscriptionID, connectionId: conn, sinceSeq: nil)
             case .snapshot(let snap):
+                restoreFeedback(from: snap, connectionID: conn)
                 recoveryTimeoutTask?.cancel()
                 // A snapshot means the socket is healthy — reset the reconnect budget.
                 streamReconnects = 0
@@ -1516,6 +1684,7 @@ final class SessionDetailViewModel {
             live.upsertToolCall(id: id, title: title, kind: kind, status: status, rawInput: rawInput, rawOutput: rawOutput, content: content, meta: meta)
             sendState = .running(tool: title.isEmpty ? "tool" : title)
             requestScrollToBottom()
+            deliverQueueAtToolBoundary(id: id, status: status)
 
         case .toolCallUpdate(let id, let title, let status, let content, let rawInput, let rawOutput, let append, let meta):
             clearRetryNotice()
@@ -1526,6 +1695,7 @@ final class SessionDetailViewModel {
                 sendState = .thinking
             }
             requestScrollToBottom()
+            deliverQueueAtToolBoundary(id: id, status: status)
 
         case .statusChanged(let status):
             switch status {
@@ -1546,12 +1716,26 @@ final class SessionDetailViewModel {
             applyUsage(used: used, size: size)
 
         case .userMessage(let messageID, _):
+            queueGeneration &+= 1
+            completedQueueTools.removeAll()
+            feedbackNotes.removeAll()
+            consumedFeedback.removeAll()
+            dismissedFeedback.removeAll()
             if messageID == promptSubmissionID {
                 confirmedPromptID = messageID
                 draftCreatedConversationID = nil
             }
             // The server echoes our own prompt; we already showed it optimistically.
             break
+
+        case .feedbackSubmitted(let item):
+            mergeFeedback(item)
+
+        case .feedbackConsumed(let ids):
+            consumedFeedback.formUnion(ids)
+            for index in feedbackNotes.indices where consumedFeedback.contains(feedbackNotes[index].id) {
+                feedbackNotes[index].status = "delivered"
+            }
 
         case .turnComplete(let stopReason):
             // A turn that ended badly keeps the reason it was given, inline — e.g.
@@ -1740,6 +1924,7 @@ final class SessionDetailViewModel {
 
     private func finalize(live: LiveTurn, stopReason: String) {
         guard isTurnActive else { return }
+        queueGeneration &+= 1
         isTurnActive = false
         // Read before clearing: this is the one transition that delivers parked
         // plan-revision notes (every other terminal path drops them).
@@ -1762,6 +1947,7 @@ final class SessionDetailViewModel {
         // The keep-planning turn just ended — deliver the revision notes as the
         // follow-up prompt Grok expects (it discards them on the reply itself).
         if let planFollowUp { send(overrideText: planFollowUp) }
+        sendQueuedHeadIfIdle()
     }
 
     /// Roll back an optimistic send that failed *before the server accepted the
@@ -1793,17 +1979,22 @@ final class SessionDetailViewModel {
         // created — re-open the draft's agent/folder pickers for an edited retry.
         if conversationID == nil { hasStartedFirstSend = false }
         // Don't clobber a fresh draft the user may have started typing.
-        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let index = queuedMessages.firstIndex(where: { "queued-\($0.id)" == userTurnID }) {
+            queuedMessages[index].isSending = false
+            queuedMessages[index].failure = String(localized: "Message was not sent. Retry when ready.")
+        } else if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             draft = text
         }
         // Restore the staged images too, unless the user has since added new ones.
-        if attachments.isEmpty, !sent.isEmpty {
+        if !userTurnID.hasPrefix("queued-"), attachments.isEmpty, !sent.isEmpty {
             attachments = sent
         }
         requestScrollToBottom()
     }
 
     private func failLive(_ live: LiveTurn, message: String?) {
+        queuePaused = true
+        queueGeneration &+= 1
         isTurnActive = false
         clearInteractivePrompts()
         clearRetryNotice()
@@ -2162,6 +2353,8 @@ final class SessionDetailViewModel {
     // MARK: - Cancel
 
     func cancel() {
+        queuePaused = true
+        queueGeneration &+= 1
         resumeGeneration &+= 1
         guard let live = liveTurn else { return }
         let conn = connectionID
@@ -2201,6 +2394,13 @@ final class SessionDetailViewModel {
 
     /// Tear down all live work — call from `.onDisappear` / deinit paths.
     func teardown() {
+        viewActive = false
+        queueGeneration &+= 1
+        steeringCapabilityTask?.cancel()
+        for index in queuedMessages.indices where queuedMessages[index].isSending {
+            queuedMessages[index].isSending = false
+            queuedMessages[index].failure = String(localized: "Delivery unconfirmed. Check the conversation before retrying.")
+        }
         resumeGeneration &+= 1
         isTurnActive = false
         sendTask?.cancel()

@@ -59,6 +59,8 @@ enum AcpEvent: Hashable, Sendable, Decodable {
     case usageUpdate(used: UInt64, size: UInt64)
     case userMessage(messageId: String, blocks: [UserMessageBlock])
     case userPromptSent(textPreview: String)
+    case feedbackSubmitted(SessionFeedback)
+    case feedbackConsumed(ids: [String])
     /// Not necessarily the end of the turn: most errors (a dropped image, a
     /// refused mode switch, a failed turn about to be followed by
     /// `turn_complete`) leave the connection alive. Only `turn_complete` ends a
@@ -102,7 +104,7 @@ enum AcpEvent: Hashable, Sendable, Decodable {
 
     private enum CodingKeys: String, CodingKey {
         case type, text, title, kind, status, content, meta
-        case toolCallId, rawInput, rawOutput, rawOutputAppend
+        case toolCallId, rawInput, rawOutput, rawOutputAppend, item, ids
         case stopReason, sessionId, conversationId, folderId
         case used, size, messageId, blocks, message, code, textPreview
         case requestId, toolCall, options, questionId, questions, entries
@@ -114,6 +116,10 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let type = try c.decode(String.self, forKey: .type)
         switch type {
+        case "feedback_submitted":
+            self = .feedbackSubmitted(try c.decode(SessionFeedback.self, forKey: .item))
+        case "feedback_consumed":
+            self = .feedbackConsumed(ids: try c.decode([String].self, forKey: .ids))
         case "content_delta":
             self = .contentDelta(
                 text: try c.decodeIfPresent(String.self, forKey: .text) ?? "",
@@ -367,12 +373,15 @@ struct LiveSessionSnapshot: Sendable, Decodable {
     let pendingQuestion: PendingQuestionSnapshot?
     let pendingPlanApproval: PendingPlanApprovalSnapshot?
     let pendingUserMessageId: String?
+    let nativeSteeringAvailable: Bool
+    let feedback: [SessionFeedback]
 
     private struct PendingUserMessage: Decodable { let messageId: String }
 
     private enum CodingKeys: String, CodingKey {
         case connectionId, conversationId, folderId, status, externalId, eventSeq
         case liveMessage, activeToolCalls, pendingPermission, pendingQuestion, pendingPlanApproval, pendingUserMessage
+        case nativeSteeringAvailable, feedback
     }
 
     init(from decoder: Decoder) throws {
@@ -389,6 +398,8 @@ struct LiveSessionSnapshot: Sendable, Decodable {
         pendingQuestion = (try? c.decodeIfPresent(PendingQuestionSnapshot.self, forKey: .pendingQuestion)) ?? nil
         pendingPlanApproval = (try? c.decodeIfPresent(PendingPlanApprovalSnapshot.self, forKey: .pendingPlanApproval)) ?? nil
         pendingUserMessageId = (try? c.decodeIfPresent(PendingUserMessage.self, forKey: .pendingUserMessage))?.messageId
+        nativeSteeringAvailable = (try? c.decodeIfPresent(Bool.self, forKey: .nativeSteeringAvailable)) ?? false
+        feedback = (try? c.decodeIfPresent([SessionFeedback].self, forKey: .feedback)) ?? []
     }
 }
 
