@@ -130,12 +130,26 @@ final class AppModel {
         // IDs are endpoint-local). Reject duplicate IDs as ambiguous as well.
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
         let serverIDs = (components.queryItems ?? []).filter { $0.name == "server_id" }
+        let serverURLs = (components.queryItems ?? []).filter { $0.name == "server_url" }
+        var targetServerID: UUID?
         if !serverIDs.isEmpty {
             guard serverIDs.count == 1,
                   let value = serverIDs[0].value, let id = UUID(uuidString: value),
                   serverStore.servers.contains(where: { $0.id == id }) else { return }
-            selectedServerID = id
+            targetServerID = id
         }
+        if !serverURLs.isEmpty {
+            guard serverURLs.count == 1,
+                  let value = serverURLs[0].value,
+                  let endpoint = Self.notificationEndpoint(value) else { return }
+            let matches = serverStore.servers.filter {
+                Self.notificationEndpoint($0.urlString) == endpoint
+            }
+            guard matches.count == 1,
+                  targetServerID == nil || targetServerID == matches[0].id else { return }
+            targetServerID = matches[0].id
+        }
+        if let targetServerID { selectedServerID = targetServerID }
         if url.host?.lowercased() == "tab",
            url.pathComponents.count > 1,
            let tab = AppTab(rawValue: url.pathComponents[1].lowercased()) {
@@ -185,6 +199,23 @@ final class AppModel {
         // Open Settings at its root (not whatever leaf a prior deep link left).
         case .settings: settingsPath = []; settingsSheetPresented = true
         }
+    }
+
+    /// Browser/desktop Bark subscriptions carry a server endpoint because
+    /// their configuration does not know this phone's local profile UUID.
+    private static func notificationEndpoint(_ value: String) -> String? {
+        guard var url = URLComponents(string: value),
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = url.host, !host.isEmpty,
+              url.user == nil, url.password == nil,
+              url.query == nil, url.fragment == nil else { return nil }
+        url.scheme = scheme
+        url.host = host.lowercased()
+        if (scheme == "http" && url.port == 80) || (scheme == "https" && url.port == 443) {
+            url.port = nil
+        }
+        while url.path.hasSuffix("/") { url.path.removeLast() }
+        return url.string
     }
 
     // MARK: - Server-scoped resets

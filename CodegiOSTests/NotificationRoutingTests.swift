@@ -119,4 +119,29 @@ final class NotificationRoutingTests: XCTestCase {
         XCTAssertTrue(model.paths.isEmpty)
         XCTAssertTrue(model.settingsPath.isEmpty)
     }
+
+    func testServerBrowserLinkMatchesSavedEndpointBeforeNavigation() {
+        let model = app(compact: true)
+        model.handle(url: URL(string: "codeg://conversation/42?server_url=https%3A%2F%2FSECOND.example%3A443%2F")!)
+        XCTAssertEqual(model.selectedServerID, second.id)
+        XCTAssertEqual(model.paths[.chats], [.conversation(42)])
+        model.selectedServerChanged(from: first, to: second)
+        XCTAssertEqual(model.paths[.chats], [.conversation(42)])
+    }
+
+    func testUnknownMalformedAndConflictingServerEndpointsDoNotNavigate() {
+        for query in [
+            "server_url=https%3A%2F%2Funknown.example",
+            "server_url=file%3A%2F%2F%2Ftmp",
+            "server_url=https%3A%2F%2Fsecond.example%3Ftoken%3Dsecret",
+            "server_url=https%3A%2F%2Fsecond.example&server_id=\(first.id.uuidString)",
+            "server_url=https%3A%2F%2Fsecond.example&server_url=https%3A%2F%2Fsecond.example",
+            "server_url=",
+        ] {
+            let model = app(compact: true)
+            model.handle(url: URL(string: "codeg://conversation/42?\(query)")!)
+            XCTAssertEqual(model.selectedServerID, first.id)
+            XCTAssertTrue(model.paths.isEmpty)
+        }
+    }
 }

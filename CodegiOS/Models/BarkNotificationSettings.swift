@@ -7,6 +7,8 @@ struct BarkNotificationSettings: Codable, Equatable, Sendable {
     var pushUrl = ""
     var includePreview = false
     var language = "en"
+    /// Preserve server-browser settings when editing the same subscription.
+    var serverUrl: String?
 
     // Keep Url (not URL): both camelCase and the shared snake-case decoder
     // resolve to this spelling.
