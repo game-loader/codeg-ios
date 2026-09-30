@@ -65,6 +65,38 @@
         }
       }
     },
+    "Notification source/server name": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notification source/server name"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通知来源／服务器名称"
+          }
+        }
+      }
+    },
+    "The source/server name appears in the notification title. Up to 80 characters.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The source/server name appears in the notification title. Up to 80 characters."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "来源／服务器名称将显示在通知副标题中，最多 80 个字符。"
+          }
+        }
+      }
+    },
     "Include reply preview": {
       "localizations": {
         "en": {

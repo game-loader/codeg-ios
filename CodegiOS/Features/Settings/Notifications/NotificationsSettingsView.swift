@@ -5,8 +5,9 @@ struct NotificationsSettingsView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.locale) private var locale
 
-    init(selectedServerID: UUID?, client: CodegClient?) {
-        _model = State(initialValue: NotificationsSettingsModel(deviceID: selectedServerID, api: client))
+    init(selectedServerID: UUID?, selectedServerName: String?, client: CodegClient?) {
+        _model = State(initialValue: NotificationsSettingsModel(
+            deviceID: selectedServerID, selectedServerName: selectedServerName, api: client))
     }
 
     var body: some View {
@@ -14,7 +15,7 @@ struct NotificationsSettingsView: View {
             CodegBackground()
             ScrollView {
                 VStack(spacing: 22) {
-                    EditorSection(title: "Bark") {
+                    EditorSection(title: "Bark", footer: "The source/server name appears in the notification title. Up to 80 characters.") {
                         Toggle("Enable notifications", isOn: $model.draft.enabled)
                             .padding(16)
                         SettingsRowDivider()
@@ -23,6 +24,15 @@ struct NotificationsSettingsView: View {
                                 .keyboardType(.URL)
                                 .privacySensitive()
                                 .accessibilityLabel("Bark URL")
+                        }
+                        SettingsRowDivider()
+                        FieldRow(label: "Notification source/server name") {
+                            TextField("Notification source/server name", text: Binding(
+                                get: { model.draft.sourceName ?? "" },
+                                set: { model.draft.sourceName = $0 }
+                            ))
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
                         }
                         SettingsRowDivider()
                         Toggle("Include reply preview", isOn: $model.draft.includePreview)

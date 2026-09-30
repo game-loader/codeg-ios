@@ -50,6 +50,88 @@ final class BarkNotificationSettingsTests: XCTestCase {
         XCTAssertEqual(reopened.draft, model.saved)
     }
 
+    func testMissingOrEmptySourceDefaultsToProfileNameWithoutSaving() async {
+        let sourceNames: [String?] = [nil, "", " \n "]
+        for sourceName in sourceNames {
+            var settings = BarkNotificationSettings.configured
+            settings.sourceName = sourceName
+            settings.serverUrl = "https://workspace.example"
+            let api = BarkSettingsStub(settings: settings)
+            let id = UUID()
+            let model = NotificationsSettingsModel(deviceID: id, selectedServerName: "  Remote workspace  ", api: api)
+            await model.load()
+            XCTAssertEqual(model.saved, settings)
+            XCTAssertEqual(model.draft.sourceName, "Remote workspace")
+            XCTAssertEqual(model.draft.serverUrl, settings.serverUrl)
+            XCTAssertTrue(model.hasUnsavedChanges)
+            XCTAssertFalse(model.canTest)
+            XCTAssertTrue(api.writes.isEmpty)
+            await model.test(locale: english)
+            XCTAssertEqual(model.failure, .unsaved)
+            XCTAssertTrue(api.writes.isEmpty)
+            XCTAssertTrue(api.testedIDs.isEmpty)
+
+            await model.save(locale: english)
+            XCTAssertEqual(api.writes.first?.0, id)
+            XCTAssertEqual(api.writes.first?.1.sourceName, "Remote workspace")
+            XCTAssertEqual(api.writes.first?.1.serverUrl, settings.serverUrl)
+            XCTAssertFalse(model.hasUnsavedChanges)
+            XCTAssertTrue(model.canTest)
+        }
+    }
+
+    func testExistingSourceSurvivesProfileNameAndTestLocaleChange() async {
+        var settings = BarkNotificationSettings.configured
+        settings.sourceName = "研究服务器"
+        settings.serverUrl = "https://workspace.example"
+        let api = BarkSettingsStub(settings: settings)
+        let id = UUID()
+        let model = NotificationsSettingsModel(deviceID: id, selectedServerName: "Different profile name", api: api)
+        await model.load()
+        XCTAssertEqual(model.draft, settings)
+        XCTAssertFalse(model.hasUnsavedChanges)
+        await model.test(locale: chinese)
+        XCTAssertEqual(api.writes.first?.1.sourceName, settings.sourceName)
+        XCTAssertEqual(api.writes.first?.1.serverUrl, settings.serverUrl)
+        XCTAssertEqual(api.testedIDs, [id])
+    }
+
+    func testRepeatedLoadPreservesEditedAndExplicitlyClearedSource() async {
+        let api = BarkSettingsStub(settings: .configured)
+        let model = NotificationsSettingsModel(deviceID: UUID(), selectedServerName: "Remote", api: api)
+        await model.load()
+        model.draft.sourceName = "Edited"
+        await model.load()
+        XCTAssertEqual(model.draft.sourceName, "Edited")
+        model.draft.sourceName = ""
+        await model.save(locale: english)
+        await model.load()
+        XCTAssertEqual(api.loadedIDs.count, 1)
+        XCTAssertEqual(api.writes.first?.1.sourceName, "")
+        XCTAssertEqual(model.draft.sourceName, "")
+        XCTAssertFalse(model.hasUnsavedChanges)
+    }
+
+    func testSourceNormalizationAppliesToProfileDefaultAndEdits() async {
+        let cases = [
+            ("  Work\nServer\u{2028}East  ", "Work Server East"),
+            (String(repeating: "a", count: 81), String(repeating: "a", count: 80)),
+            (String(repeating: "😀", count: 41), String(repeating: "😀", count: 40)),
+            (String(repeating: "中", count: 81), String(repeating: "中", count: 80))
+        ]
+        for (input, expected) in cases {
+            let api = BarkSettingsStub()
+            let model = NotificationsSettingsModel(deviceID: UUID(), selectedServerName: input, api: api)
+            await model.load()
+            XCTAssertEqual(model.draft.sourceName, expected)
+            model.draft.sourceName = input
+            await model.save(locale: english)
+            XCTAssertEqual(api.writes.first?.1.sourceName, expected)
+            XCTAssertEqual(model.draft.sourceName, expected)
+            XCTAssertFalse(model.hasUnsavedChanges)
+        }
+    }
+
     func testUnsavedEditsCannotBeTestedOrImplicitlySaved() async {
         let api = BarkSettingsStub(settings: .configured)
         let model = NotificationsSettingsModel(deviceID: UUID(), api: api)
@@ -186,8 +268,8 @@ final class BarkNotificationSettingsTests: XCTestCase {
         let firstID = UUID(), secondID = UUID()
         let firstAPI = BarkSettingsStub(settings: .configured)
         let secondAPI = BarkSettingsStub()
-        let first = NotificationsSettingsModel(deviceID: firstID, api: firstAPI)
-        let second = NotificationsSettingsModel(deviceID: secondID, api: secondAPI)
+        let first = NotificationsSettingsModel(deviceID: firstID, selectedServerName: "First workspace", api: firstAPI)
+        let second = NotificationsSettingsModel(deviceID: secondID, selectedServerName: "Second workspace", api: secondAPI)
         let loadGate = BarkOperationGate()
         firstAPI.loadGate = loadGate
         let load = Task { await first.load() }
@@ -214,9 +296,10 @@ final class BarkNotificationSettingsTests: XCTestCase {
         await save.value
         XCTAssertEqual(firstAPI.writes.count, 1)
         XCTAssertEqual(firstAPI.writes.first?.0, firstID)
+        XCTAssertEqual(firstAPI.writes.first?.1.sourceName, "First workspace")
         XCTAssertTrue(firstAPI.testedIDs.isEmpty)
         XCTAssertEqual(secondAPI.loadedIDs, [secondID])
-        XCTAssertEqual(second.draft, BarkNotificationSettings())
+        XCTAssertEqual(second.draft, BarkNotificationSettings(sourceName: "Second workspace"))
         XCTAssertTrue(secondAPI.writes.isEmpty)
     }
 }

@@ -34,10 +34,12 @@ final class NotificationsSettingsModel {
     // Immutable scope: a new profile/endpoint gets a new view and model. An
     // outstanding operation can only update its original model and server.
     private let deviceID: UUID?
+    private let selectedServerName: String?
     private let api: (any BarkNotificationAPI)?
 
-    init(deviceID: UUID?, api: (any BarkNotificationAPI)?) {
+    init(deviceID: UUID?, selectedServerName: String? = nil, api: (any BarkNotificationAPI)?) {
         self.deviceID = deviceID
+        self.selectedServerName = selectedServerName
         self.api = api
     }
 
@@ -56,6 +58,13 @@ final class NotificationsSettingsModel {
             let settings = try await api.barkNotificationSettings(deviceID: deviceID)
             draft = settings
             saved = settings
+            // Prefill only on the initial successful load, without registering
+            // or silently saving the subscription (including its other fields).
+            if Self.normalizedSourceName(settings.sourceName ?? "").isEmpty,
+               let selectedServerName {
+                let name = Self.normalizedSourceName(selectedServerName)
+                if !name.isEmpty { draft.sourceName = name }
+            }
         } catch { failure = Self.failure(for: error) }
     }
 
@@ -63,6 +72,7 @@ final class NotificationsSettingsModel {
         guard canEdit, let api, let deviceID else { return }
         var settings = draft
         settings.pushUrl = settings.pushUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings.sourceName = settings.sourceName.map(Self.normalizedSourceName)
         guard Self.isValid(settings) else { failure = .invalidURL; return }
         settings.language = BarkNotificationSettings.language(for: locale)
         operation = .saving
@@ -98,6 +108,16 @@ final class NotificationsSettingsModel {
             try await api.testBarkNotification(deviceID: deviceID)
             notice = "Test notification sent."
         } catch { failure = Self.failure(for: error) }
+    }
+
+    private static func normalizedSourceName(_ value: String) -> String {
+        let singleLine = value.components(separatedBy: .newlines).joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var name = String(singleLine.prefix(80))
+        // Also fit validators that count UTF-16 units, without splitting a
+        // composed character or an emoji at the limit.
+        while name.utf16.count > 80 { name.removeLast() }
+        return name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func isValid(_ settings: BarkNotificationSettings) -> Bool {

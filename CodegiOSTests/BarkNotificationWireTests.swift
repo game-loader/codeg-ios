@@ -34,6 +34,28 @@ final class BarkNotificationWireTests: XCTestCase {
         XCTAssertEqual(deviceObject, ["deviceId": id.uuidString])
     }
 
+    func testOptionalSourceNameAndServerURLDecodeAndRoundTrip() throws {
+        for source in ["", #","sourceName":null"#, #","sourceName":"""#] {
+            let json = "{\"enabled\":false,\"pushUrl\":\"\",\"includePreview\":false,\"language\":\"en\"\(source)}"
+            let settings = try CodegJSON.decoder.decode(BarkNotificationSettings.self, from: Data(json.utf8))
+            XCTAssertTrue(settings.sourceName?.isEmpty ?? true)
+        }
+        for json in [
+            #"{"enabled":true,"pushUrl":"http://bark.example/key","includePreview":true,"language":"zh-Hans","sourceName":"研究服务器","serverUrl":"https://workspace.example"}"#,
+            #"{"enabled":true,"push_url":"http://bark.example/key","include_preview":true,"language":"zh-Hans","source_name":"研究服务器","server_url":"https://workspace.example"}"#
+        ] {
+            let settings = try CodegJSON.decoder.decode(BarkNotificationSettings.self, from: Data(json.utf8))
+            XCTAssertEqual(settings.sourceName, "研究服务器")
+            XCTAssertEqual(settings.serverUrl, "https://workspace.example")
+            let encoded = try CodegJSON.encoder.encode(settings)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+            XCTAssertEqual(Set(object.keys), ["enabled", "pushUrl", "includePreview", "language", "sourceName", "serverUrl"])
+            XCTAssertEqual(object["sourceName"] as? String, "研究服务器")
+            XCTAssertEqual(object["serverUrl"] as? String, "https://workspace.example")
+            XCTAssertEqual(try CodegJSON.decoder.decode(BarkNotificationSettings.self, from: encoded), settings)
+        }
+    }
+
     func testClientPOSTEndpointsUseSavedProfileIdentityAndAcceptNullAcknowledgement() async throws {
         let session = makeSession()
         defer { session.invalidateAndCancel() }
@@ -41,7 +63,8 @@ final class BarkNotificationWireTests: XCTestCase {
         let loaded = try await client.barkNotificationSettings(deviceID: BarkWireProtocol.deviceID)
         XCTAssertEqual(loaded, BarkNotificationSettings())
         let settings = BarkNotificationSettings(enabled: true, pushUrl: "https://api.day.app/test-key",
-                                                includePreview: true, language: "zh-Hans")
+                                                includePreview: true, language: "zh-Hans",
+                                                sourceName: "Remote workspace", serverUrl: "https://workspace.example")
         let saved = try await client.setBarkNotificationSettings(deviceID: BarkWireProtocol.deviceID, settings: settings)
         XCTAssertEqual(saved, settings)
         try await client.testBarkNotification(deviceID: BarkWireProtocol.deviceID)
@@ -90,7 +113,9 @@ private final class BarkWireProtocol: URLProtocol, @unchecked Sendable {
             case "/api/set_bark_notification_settings":
                 guard Set(body.keys) == ["deviceId", "settings"],
                       let settings = body["settings"] as? [String: Any],
-                      Set(settings.keys) == ["enabled", "pushUrl", "includePreview", "language"] else {
+                      Set(settings.keys) == ["enabled", "pushUrl", "includePreview", "language", "sourceName", "serverUrl"],
+                      settings["sourceName"] as? String == "Remote workspace",
+                      settings["serverUrl"] as? String == "https://workspace.example" else {
                     throw URLError(.badServerResponse)
                 }
                 response = try JSONSerialization.data(withJSONObject: settings)

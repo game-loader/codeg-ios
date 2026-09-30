@@ -67,7 +67,7 @@ enum SettingsLeaf: String, Hashable, CaseIterable, Identifiable {
 
     /// The screen this leaf pushes.
     @MainActor @ViewBuilder
-    func destination(store: ServerStore, selectedServerID: ServerProfile.ID?) -> some View {
+    func destination(store: ServerStore, selectedServerID: ServerProfile.ID?, selectedServerName: String?) -> some View {
         let client = store.servers.first { $0.id == selectedServerID }.flatMap { store.client(for: $0) }
         switch self {
         case .general:
@@ -87,7 +87,7 @@ enum SettingsLeaf: String, Hashable, CaseIterable, Identifiable {
         case .chatChannels:
             ChatChannelsSettingsView(client: client)
         case .notifications:
-            NotificationsSettingsView(selectedServerID: selectedServerID, client: client)
+            NotificationsSettingsView(selectedServerID: selectedServerID, selectedServerName: selectedServerName, client: client)
                 .id("\(selectedServerID?.uuidString ?? "none")|\(client?.baseURL.absoluteString ?? "")|\(client?.token.hashValue ?? 0)")
         case .versionControl:
             VersionControlSettingsView(client: client)

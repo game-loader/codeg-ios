@@ -7,6 +7,9 @@ struct BarkNotificationSettings: Codable, Equatable, Sendable {
     var pushUrl = ""
     var includePreview = false
     var language = "en"
+    /// Display-only notification label; the profile UUID remains the routing identity.
+    /// Optional so responses from servers predating this field still decode.
+    var sourceName: String?
     /// Preserve server-browser settings when editing the same subscription.
     var serverUrl: String?
 

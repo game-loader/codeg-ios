@@ -42,7 +42,7 @@ struct SettingsView: View {
         }
         .screenTitle("Settings", compact: horizontalSizeClass == .compact)
         .navigationDestination(for: SettingsLeaf.self) { leaf in
-            leaf.destination(store: store, selectedServerID: selectedServerID)
+            leaf.destination(store: store, selectedServerID: selectedServerID, selectedServerName: selectedServer?.name)
         }
         .task(id: selectedServerID) {
             await versionModel.load(selectedServer.flatMap { store.client(for: $0) })
