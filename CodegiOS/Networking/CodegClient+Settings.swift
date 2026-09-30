@@ -5,6 +5,25 @@ import Foundation
 /// transport (`postJSON` / `send`) as the base client. Grouped by category as the
 /// feature lands batch by batch.
 extension CodegClient {
+    // MARK: - Bark Notifications
+
+    func barkNotificationSettings(deviceID: UUID) async throws -> BarkNotificationSettings {
+        try await postJSON("get_bark_notification_settings", BarkDeviceBody(deviceId: deviceID.uuidString))
+    }
+
+    func setBarkNotificationSettings(deviceID: UUID, settings: BarkNotificationSettings) async throws -> BarkNotificationSettings {
+        try await postJSON("set_bark_notification_settings",
+                           SetBarkNotificationSettingsBody(deviceId: deviceID.uuidString, settings: settings))
+    }
+
+    func testBarkNotification(deviceID: UUID) async throws {
+        let data = try await send("test_bark_notification", body: BarkDeviceBody(deviceId: deviceID.uuidString))
+        // Require the server's acknowledgement, including its null JSON result.
+        guard String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "null" else {
+            throw APIError.decoding("Invalid notification acknowledgement")
+        }
+    }
+
     // MARK: - Quick Messages
 
     func quickMessagesList() async throws -> [QuickMessage] {

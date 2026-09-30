@@ -125,6 +125,17 @@ final class AppModel {
     /// tab's root, not to wherever the user happened to be).
     func handle(url: URL) {
         guard url.scheme?.lowercased() == "codeg" else { return }
+        // An explicit server identity must resolve before any navigation. Never
+        // fall back to the current server for invalid/unknown IDs (conversation
+        // IDs are endpoint-local). Reject duplicate IDs as ambiguous as well.
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+        let serverIDs = (components.queryItems ?? []).filter { $0.name == "server_id" }
+        if !serverIDs.isEmpty {
+            guard serverIDs.count == 1,
+                  let value = serverIDs[0].value, let id = UUID(uuidString: value),
+                  serverStore.servers.contains(where: { $0.id == id }) else { return }
+            selectedServerID = id
+        }
         if url.host?.lowercased() == "tab",
            url.pathComponents.count > 1,
            let tab = AppTab(rawValue: url.pathComponents[1].lowercased()) {
@@ -139,6 +150,7 @@ final class AppModel {
         if url.host?.lowercased() == "settings",
            url.pathComponents.count > 1,
            let leaf = SettingsLeaf(slug: url.pathComponents[1]) {
+            serversSheetPresented = false
             settingsPath = [leaf]
             if isCompact {
                 selectedTab = .settings
@@ -148,12 +160,15 @@ final class AppModel {
             return
         }
         guard let route = Route.from(url: url) else { return }
+        settingsSheetPresented = false
+        serversSheetPresented = false
         if isCompact {
             let owner: AppTab = if case .project = route { .projects } else { .chats }
             selectedTab = owner
             paths[owner] = [route]
         } else {
             if case .project = route { contentPath = [] }
+            if case .conversation = route { sidebarSection = .chats }
             open(route)
         }
     }
@@ -189,5 +204,12 @@ final class AppModel {
     /// URL/token) — the old endpoint's IDs may not exist on the new one.
     func selectedServerEndpointChanged() {
         resetServerScopedState()
+    }
+
+    /// A profile switch already resets state synchronously in didSet, before
+    /// deep-link navigation. Only an in-place edit needs the later view callback.
+    func selectedServerChanged(from old: ServerProfile?, to new: ServerProfile?) {
+        guard old?.id == new?.id, old?.urlString != new?.urlString else { return }
+        selectedServerEndpointChanged()
     }
 }

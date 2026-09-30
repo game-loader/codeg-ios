@@ -53,8 +53,8 @@ struct RootView: View {
         // If the selected server is edited in place (same UUID, new endpoint),
         // its conversation/folder IDs may no longer be valid — drop them.
         // (Switching servers is handled by AppModel.selectedServerID.didSet.)
-        .onChange(of: model.selectedServer?.urlString) { _, _ in
-            model.selectedServerEndpointChanged()
+        .onChange(of: model.selectedServer) { old, new in
+            model.selectedServerChanged(from: old, to: new)
         }
         // App-wide activity pulse: feeds the Activity tab, its sidebar badge,
         // and the bottom running bar. Restarts when the scene activates or the

@@ -8,6 +8,15 @@ import Foundation
 
 // MARK: - Shared
 
+struct BarkDeviceBody: Encodable, Sendable {
+    let deviceId: String
+}
+
+struct SetBarkNotificationSettingsBody: Encodable, Sendable {
+    let deviceId: String
+    let settings: BarkNotificationSettings
+}
+
 /// `{ id }` — delete-by-id (quick_messages_delete, delete_model_provider, …).
 struct IdBody: Encodable, Sendable {
     let id: Int

@@ -18,6 +18,7 @@ enum SettingsLeaf: String, Hashable, CaseIterable, Identifiable {
     case quickMessages
     case versionControl
     case chatChannels
+    case notifications
     case system
 
     var id: String { rawValue }
@@ -43,6 +44,7 @@ enum SettingsLeaf: String, Hashable, CaseIterable, Identifiable {
         case .quickMessages: "Quick Messages"
         case .versionControl: "Version Control"
         case .chatChannels: "Chat Channels"
+        case .notifications: "Notifications"
         case .system: "System"
         }
     }
@@ -58,11 +60,12 @@ enum SettingsLeaf: String, Hashable, CaseIterable, Identifiable {
         case .quickMessages: "text.bubble.fill"
         case .versionControl: "arrow.triangle.branch"
         case .chatChannels: "bell.badge.fill"
+        case .notifications: "bell"
         case .system: "gearshape.2.fill"
         }
     }
 
-    /// The screen this leaf pushes. All ten categories are implemented.
+    /// The screen this leaf pushes.
     @MainActor @ViewBuilder
     func destination(store: ServerStore, selectedServerID: ServerProfile.ID?) -> some View {
         let client = store.servers.first { $0.id == selectedServerID }.flatMap { store.client(for: $0) }
@@ -83,6 +86,9 @@ enum SettingsLeaf: String, Hashable, CaseIterable, Identifiable {
             AgentsSettingsView(client: client)
         case .chatChannels:
             ChatChannelsSettingsView(client: client)
+        case .notifications:
+            NotificationsSettingsView(selectedServerID: selectedServerID, client: client)
+                .id("\(selectedServerID?.uuidString ?? "none")|\(client?.baseURL.absoluteString ?? "")|\(client?.token.hashValue ?? 0)")
         case .versionControl:
             VersionControlSettingsView(client: client)
         case .system:

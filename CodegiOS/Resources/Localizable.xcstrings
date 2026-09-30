@@ -1,6 +1,246 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Notifications": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notifications"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通知"
+          }
+        }
+      }
+    },
+    "Bark": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bark"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bark"
+          }
+        }
+      }
+    },
+    "Bark URL": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bark URL"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bark URL"
+          }
+        }
+      }
+    },
+    "Enable notifications": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable notifications"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用通知"
+          }
+        }
+      }
+    },
+    "Include reply preview": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Include reply preview"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "包含回复预览"
+          }
+        }
+      }
+    },
+    "Test Notification": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Test Notification"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送测试通知"
+          }
+        }
+      }
+    },
+    "Select a server and check its connection settings.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a server and check its connection settings."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请选择服务器并检查连接设置。"
+          }
+        }
+      }
+    },
+    "Could not reach the server. Check your connection and retry.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not reach the server. Check your connection and retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法连接服务器，请检查网络连接后重试。"
+          }
+        }
+      }
+    },
+    "Authentication failed. Check the server token and retry.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Authentication failed. Check the server token and retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "身份验证失败，请检查服务器令牌后重试。"
+          }
+        }
+      }
+    },
+    "Update the server to a version that supports Bark notifications, then retry.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update the server to a version that supports Bark notifications, then retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请将服务器更新至支持 Bark 通知的版本后重试。"
+          }
+        }
+      }
+    },
+    "Enter a valid HTTP or HTTPS Bark URL.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a valid HTTP or HTTPS Bark URL."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请输入有效的 HTTP 或 HTTPS Bark URL。"
+          }
+        }
+      }
+    },
+    "Save your changes before sending a test notification.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save your changes before sending a test notification."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先保存更改，再发送测试通知。"
+          }
+        }
+      }
+    },
+    "Notification request failed. Check the Bark URL and server, then retry.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notification request failed. Check the Bark URL and server, then retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通知请求失败，请检查 Bark URL 和服务器后重试。"
+          }
+        }
+      }
+    },
+    "Notification settings saved.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notification settings saved."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通知设置已保存。"
+          }
+        }
+      }
+    },
+    "Test notification sent.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Test notification sent."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "测试通知已发送。"
+          }
+        }
+      }
+    },
     "Restore or dismiss unread feedback to continue.": {
       "localizations": {
         "zh-Hans": {
