@@ -12,6 +12,11 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Common file attachments from the iOS Files picker, including Excel, Word,
+  PDF, presentations, text/code, archives, audio and video. Files are copied
+  and uploaded from disk with progress, cancellation, and explicit retry, then
+  sent as server file references. Large files do not become inline/base64 chat
+  payloads; the selected server's upload limit applies.
 - Messages composed during a running task can be queued without stopping it.
   Compatible Codex sessions with live feedback enabled receive queued messages
   after a tool finishes; ordinary end-of-turn delivery remains the fallback.

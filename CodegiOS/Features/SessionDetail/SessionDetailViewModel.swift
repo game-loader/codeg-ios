@@ -22,6 +22,9 @@ final class SessionDetailViewModel {
     // MARK: - Inputs
 
     private let client: CodegClient
+    private let attachmentUploader: any AttachmentUploadAPI
+    private var attachmentUploadTasks: [UUID: Task<Void, Never>] = [:]
+    private var attachmentUploadAttempts: [UUID: UUID] = [:]
     private let eventStreamFactory: () -> any SessionEventStream
     /// Invalidates suspended foreground reads when a send, cancel, navigation,
     /// or a newer activation takes ownership of the conversation.
@@ -144,13 +147,12 @@ final class SessionDetailViewModel {
     /// Compose-bar text.
     var draft: String = ""
 
-    /// Images staged for the next prompt (added via the "+" menu). Cleared when
+    /// Files and images staged for the next prompt. Cleared when
     /// the optimistic turn is posted; restored if that send is rolled back.
     private(set) var attachments: [Attachment] = []
 
     var canAttachMore: Bool {
         attachments.count < AttachmentPrep.maxCount
-            && attachments.reduce(0) { $0 + $1.byteCount } < AttachmentPrep.maxTotalBytes
     }
 
     /// Coarse phase of an in-flight send, for the compose status line.
@@ -235,8 +237,10 @@ final class SessionDetailViewModel {
     /// that notice without wiping an unrelated one the user hasn't read.
     private var retryNotice: String?
 
-    private init(client: CodegClient, mode: Mode, eventStreamFactory: (() -> any SessionEventStream)? = nil) {
+    private init(client: CodegClient, mode: Mode, eventStreamFactory: (() -> any SessionEventStream)? = nil,
+                 attachmentUploader: (any AttachmentUploadAPI)? = nil) {
         self.client = client
+        self.attachmentUploader = attachmentUploader ?? client
         self.eventStreamFactory = eventStreamFactory ?? {
             EventStream(baseURL: client.baseURL, token: client.token)
         }
@@ -296,15 +300,19 @@ final class SessionDetailViewModel {
 
     }
 
-    convenience init(client: CodegClient, conversationID: Int, eventStreamFactory: (() -> any SessionEventStream)? = nil) {
-        self.init(client: client, mode: .existing(conversationID: conversationID), eventStreamFactory: eventStreamFactory)
+    convenience init(client: CodegClient, conversationID: Int, eventStreamFactory: (() -> any SessionEventStream)? = nil,
+                     attachmentUploader: (any AttachmentUploadAPI)? = nil) {
+        self.init(client: client, mode: .existing(conversationID: conversationID), eventStreamFactory: eventStreamFactory,
+                  attachmentUploader: attachmentUploader)
     }
 
     /// A brand-new task: `load()` immediately fires the first prompt composed
     /// in the new-task sheet, and the screen adopts the conversation id the
     /// server links — so the very first reply streams like any other turn.
-    convenience init(client: CodegClient, newSession request: NewSessionRequest, eventStreamFactory: (() -> any SessionEventStream)? = nil) {
-        self.init(client: client, mode: .new(request), eventStreamFactory: eventStreamFactory)
+    convenience init(client: CodegClient, newSession request: NewSessionRequest, eventStreamFactory: (() -> any SessionEventStream)? = nil,
+                     attachmentUploader: (any AttachmentUploadAPI)? = nil) {
+        self.init(client: client, mode: .new(request), eventStreamFactory: eventStreamFactory,
+                  attachmentUploader: attachmentUploader)
     }
 
     // MARK: - Derived
@@ -750,12 +758,12 @@ final class SessionDetailViewModel {
 
     // MARK: - Attachments
 
-    /// Append newly-prepared images, enforcing both a count cap and an aggregate
-    /// byte budget (so the base64 prompt payload stays under the server's body
-    /// limit), and surfacing a notice if any were dropped.
+    /// The inline byte budget applies only to images; ordinary files are streamed
+    /// separately and their size limit is enforced by the selected server.
     func addAttachments(_ newAttachments: [Attachment]) {
         guard !newAttachments.isEmpty else { return }
-        var currentBytes = attachments.reduce(0) { $0 + $1.byteCount }
+        guard viewActive else { return }
+        var currentBytes = attachments.filter(\.isImage).reduce(0) { $0 + $1.byteCount }
         var droppedForCount = false
         var droppedForSize = false
         for attachment in newAttachments {
@@ -763,22 +771,81 @@ final class SessionDetailViewModel {
                 droppedForCount = true
                 break
             }
-            if currentBytes + attachment.byteCount > AttachmentPrep.maxTotalBytes {
+            if attachment.isImage, currentBytes + attachment.byteCount > AttachmentPrep.maxTotalBytes {
                 droppedForSize = true
                 continue
             }
             attachments.append(attachment)
-            currentBytes += attachment.byteCount
+            if attachment.isImage { currentBytes += attachment.byteCount }
+            else if !attachment.isReady { beginAttachmentUpload(attachment.id) }
         }
         if droppedForCount {
-            notice = "You can attach up to \(AttachmentPrep.maxCount) images."
+            notice = String(localized: "You can attach up to 10 files or images.")
         } else if droppedForSize {
             notice = "Some images were too large to attach."
         }
     }
 
     func removeAttachment(_ id: UUID) {
+        attachmentUploadAttempts.removeValue(forKey: id)
+        attachmentUploadTasks.removeValue(forKey: id)?.cancel()
         attachments.removeAll { $0.id == id }
+    }
+
+    func retryAttachment(_ id: UUID) {
+        guard viewActive, attachmentUploadTasks[id] == nil else { return }
+        beginAttachmentUpload(id)
+    }
+
+    private func beginAttachmentUpload(_ id: UUID) {
+        guard let index = attachments.firstIndex(where: { $0.id == id }),
+              let file = attachments[index].file, !attachments[index].isReady else { return }
+        let attempt = UUID()
+        attachmentUploadAttempts[id] = attempt
+        attachments[index].uploadProgress = 0
+        attachments[index].uploadFailure = nil
+        let uploader = attachmentUploader
+        let sessionID = summary?.externalId
+        attachmentUploadTasks[id] = Task { [weak self] in
+            do {
+                let result = try await uploader.uploadAttachment(file: file, sessionID: sessionID) { [weak self] progress in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.viewActive, self.attachmentUploadAttempts[id] == attempt,
+                              let index = self.attachments.firstIndex(where: { $0.id == id }) else { return }
+                        self.attachments[index].uploadProgress = min(max(progress, 0), 1)
+                    }
+                }
+                try Task.checkCancellation()
+                guard let self, self.viewActive, self.attachmentUploadAttempts[id] == attempt,
+                      let index = self.attachments.firstIndex(where: { $0.id == id }) else { return }
+                self.attachments[index].uploaded = result
+                self.attachments[index].uploadProgress = nil
+                self.attachmentUploadAttempts.removeValue(forKey: id)
+                self.attachmentUploadTasks.removeValue(forKey: id)
+            } catch {
+                guard let self, self.viewActive, self.attachmentUploadAttempts[id] == attempt,
+                      let index = self.attachments.firstIndex(where: { $0.id == id }) else { return }
+                self.attachments[index].uploadProgress = nil
+                self.attachments[index].uploadFailure = Self.attachmentFailure(error)
+                self.attachmentUploadAttempts.removeValue(forKey: id)
+                self.attachmentUploadTasks.removeValue(forKey: id)
+            }
+        }
+    }
+
+    private static func attachmentFailure(_ error: Error) -> String {
+        if case APIError.unauthorized = error {
+            return String(localized: "Authentication failed. Check the server token and retry.")
+        }
+        if case APIError.server(let status, _, let message, _) = error {
+            if status == 413 || message.lowercased().contains("maximum allowed size") {
+                return String(localized: "File exceeds the server upload limit.")
+            }
+            if message.lowercased().contains("quota exceeded") {
+                return String(localized: "The server upload storage is full.")
+            }
+        }
+        return String(localized: "Upload failed. Check your connection and retry.")
     }
 
     // MARK: - Messages queued during a running turn
@@ -959,6 +1026,10 @@ final class SessionDetailViewModel {
     func send(overrideText: String? = nil, queuedMessage: QueuedSessionMessage? = nil) {
         let text = (overrideText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         let sending = queuedMessage?.attachments ?? (overrideText == nil ? attachments : [])
+        guard sending.allSatisfy(\.isReady) else {
+            notice = String(localized: "Finish uploading or remove failed attachments before sending.")
+            return
+        }
         if overrideText == nil, !text.isEmpty || !sending.isEmpty,
            isInFlight || isSubmittingPrompt || !queuedMessages.isEmpty || queueDeliveryTask != nil {
             queuedMessages.append(QueuedSessionMessage(text: text, attachments: sending))
@@ -994,7 +1065,7 @@ final class SessionDetailViewModel {
             promoteUnreconciled(prior, keepingError: false)
         }
 
-        // 1) Optimistic user turn (text first, then images) + clear the composer.
+        // 1) Optimistic user turn (text first, then attachments) + clear the composer.
         var blocks: [ContentBlock] = []
         if !text.isEmpty { blocks.append(.text(text)) }
         blocks.append(contentsOf: sending.map { $0.optimisticBlock })
@@ -1208,10 +1279,10 @@ final class SessionDetailViewModel {
     private func sendPrompt(conn: String, text: String, attachments sending: [Attachment], clientMessageID: String) async throws {
         promptSubmissionID = clientMessageID
         defer { if promptSubmissionID == clientMessageID { promptSubmissionID = nil } }
-        // Text first, then images — matches the web client's block order.
+        // Text first, then attachments — matches the web client's block order.
         var blocks: [PromptInputBlock] = []
         if !text.isEmpty { blocks.append(.text(text)) }
-        blocks.append(contentsOf: sending.map { $0.promptInputBlock })
+        blocks.append(contentsOf: sending.compactMap { $0.promptInputBlock })
         // A new task sends a nil conversationId + the target folderId; the
         // server creates the conversation and announces it via
         // `conversation_linked` on the stream.
@@ -2046,7 +2117,7 @@ final class SessionDetailViewModel {
         } else if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             draft = text
         }
-        // Restore the staged images too, unless the user has since added new ones.
+        // Restore attachments too, unless the user has since added new ones.
         if !userTurnID.hasPrefix("queued-"), attachments.isEmpty, !sent.isEmpty {
             attachments = sent
         }
@@ -2460,6 +2531,13 @@ final class SessionDetailViewModel {
     /// Tear down all live work — call from `.onDisappear` / deinit paths.
     func teardown() {
         viewActive = false
+        for task in attachmentUploadTasks.values { task.cancel() }
+        attachmentUploadTasks.removeAll()
+        attachmentUploadAttempts.removeAll()
+        for index in attachments.indices where attachments[index].file != nil && !attachments[index].isReady {
+            attachments[index].uploadProgress = nil
+            attachments[index].uploadFailure = String(localized: "Upload interrupted. Retry when ready.")
+        }
         queueGeneration &+= 1
         queueRetryTask?.cancel()
         queueRetryTask = nil

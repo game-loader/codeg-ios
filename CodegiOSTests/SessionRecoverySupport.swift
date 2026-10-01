@@ -299,7 +299,8 @@ final class RecoveryHarness {
     var nextSnapshot: LiveSessionSnapshot
     var nextDeliversSnapshot = true
     var model: SessionDetailViewModel!
-    init(newSession: Bool = false, agentType: AgentType = .claudeCode) throws {
+    init(newSession: Bool = false, agentType: AgentType = .claudeCode,
+         attachmentUploader: (any AttachmentUploadAPI)? = nil) throws {
         server = RecoveryServer(agentType: agentType)
         nextSnapshot = try RecoveryFixtures.snapshot()
         RecoveryURLProtocol.register(server, host: host)
@@ -316,9 +317,10 @@ final class RecoveryHarness {
         if newSession {
             model = SessionDetailViewModel(client: client,
                                           newSession: NewSessionRequest(preselectedFolderID: 7),
-                                          eventStreamFactory: factory)
+                                          eventStreamFactory: factory, attachmentUploader: attachmentUploader)
         } else {
-            model = SessionDetailViewModel(client: client, conversationID: 42, eventStreamFactory: factory)
+            model = SessionDetailViewModel(client: client, conversationID: 42, eventStreamFactory: factory,
+                                          attachmentUploader: attachmentUploader)
         }
     }
     func close() {

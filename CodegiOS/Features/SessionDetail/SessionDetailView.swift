@@ -347,6 +347,7 @@ struct SessionDetailView: View {
                     canAttachMore: model.canAttachMore,
                     onAddAttachments: { model.addAttachments($0) },
                     onRemoveAttachment: { model.removeAttachment($0) },
+                    onRetryAttachment: { model.retryAttachment($0) },
                     onNotice: { model.notice = $0 },
                     onSend: { model.send() },
                     onStop: { model.cancel() },

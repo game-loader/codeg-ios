@@ -19,6 +19,13 @@ codeg backend; the app only calls its HTTP + WebSocket API.
   reasoning, tool calls + results, images, and token-usage stats.
 - **Compose + live streaming** — send a prompt and watch the agent reply stream in
   token-by-token over the WebSocket, with live tool-call status.
+- **File attachments** — attach Excel/CSV, Word, PDF, presentations, text/code,
+  archives, audio or video with **+ → Files**. Uploads show progress and offer
+  removal/cancellation and retry. Files are sent as references to the selected
+  server, so large documents are not embedded into the chat request. The server's
+  per-file limit applies (`CODEG_UPLOAD_MAX_BYTES`, 20 MiB by default; configure
+  e.g. `200M` for larger files). Keep the app open while uploading. Uploaded file
+  references also stay attached to queued messages.
 
 ## Requirements
 

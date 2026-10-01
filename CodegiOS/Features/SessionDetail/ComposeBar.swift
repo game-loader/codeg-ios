@@ -1,9 +1,10 @@
 import SwiftUI
 import PhotosUI
+import UniformTypeIdentifiers
 
 /// The pinned bottom compose bar. A leading "+" sits to the left of a growing
 /// multiline field; send / queue and Stop controls sit on the right.
-/// Attached-image thumbnails appear above the field. The "agent is
+/// Attachment chips appear above the field. The "agent is
 /// working" state is shown as a node at the tail of the transcript timeline (a
 /// thinking tick, a running tool, a streaming reply) — not as a status line here.
 ///
@@ -18,6 +19,7 @@ struct ComposeBar: View {
     let canAttachMore: Bool
     let onAddAttachments: ([Attachment]) -> Void
     let onRemoveAttachment: (UUID) -> Void
+    let onRetryAttachment: (UUID) -> Void
     let onNotice: (String) -> Void
     let onSend: () -> Void
     let onStop: () -> Void
@@ -35,12 +37,21 @@ struct ComposeBar: View {
     @State private var showCamera = false
     @State private var presentedInsert: ComposeInsertModel.Source?
     @State private var showMachinePicker = false
+    @State private var preparingFileCount = 0
+    @State private var filePreparationTask: Task<Void, Never>?
+    @State private var filePreparationID: UUID?
+    @State private var acceptsAttachmentResults = true
 
     private var hasText: Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     private var canSend: Bool {
-        hasText || !attachments.isEmpty
+        (hasText || !attachments.isEmpty)
+            && preparingFileCount == 0
+            && attachments.allSatisfy(\.isReady)
+    }
+    private var canChooseAttachments: Bool {
+        canAttachMore && preparingFileCount == 0
     }
     private var remainingSlots: Int {
         max(0, AttachmentPrep.maxCount - attachments.count)
@@ -53,8 +64,25 @@ struct ComposeBar: View {
             }
 
             if !attachments.isEmpty {
-                AttachmentChipsView(attachments: attachments, onRemove: onRemoveAttachment)
+                AttachmentChipsView(
+                    attachments: attachments,
+                    onRemove: onRemoveAttachment,
+                    onRetry: onRetryAttachment
+                )
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            if preparingFileCount > 0 {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .accessibilityHidden(true)
+                    Text("Preparing files…")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .combine)
             }
 
             if isInFlight {
@@ -117,7 +145,7 @@ struct ComposeBar: View {
         }
         .fileImporter(
             isPresented: $showFileImporter,
-            allowedContentTypes: [.image],
+            allowedContentTypes: [.item],
             allowsMultipleSelection: true
         ) { result in handleFiles(result) }
         .sheet(item: $presentedInsert) { source in
@@ -130,6 +158,11 @@ struct ComposeBar: View {
             MachinePickerSheet(client: insertModel.client) { context in
                 text = MachineContext.draft(text, appending: context)
             }
+        }
+        .onAppear { acceptsAttachmentResults = true }
+        .onDisappear {
+            acceptsAttachmentResults = false
+            cancelFilePreparation()
         }
         .animation(Theme.Motion.expand, value: isInFlight)
         .animation(Theme.Motion.expand, value: notice)
@@ -145,23 +178,23 @@ struct ComposeBar: View {
     @ViewBuilder
     private var addButton: some View {
         Menu {
-            // Attach images. Disabled per-item when the attachment budget is full,
+            // Attach files or images. Disabled while staging or when the budget is full,
             // so the insert actions below stay reachable.
             Section("Attach") {
                 Button { showPhotoPicker = true } label: {
                     Label("Photo Library", systemImage: "photo.on.rectangle")
                 }
-                .disabled(!canAttachMore)
+                .disabled(!canChooseAttachments)
                 if isCameraAvailable {
                     Button { showCamera = true } label: {
                         Label("Camera", systemImage: "camera")
                     }
-                    .disabled(!canAttachMore)
+                    .disabled(!canChooseAttachments)
                 }
                 Button { showFileImporter = true } label: {
                     Label("Files", systemImage: "folder")
                 }
-                .disabled(!canAttachMore)
+                .disabled(!canChooseAttachments)
             }
             // Insert text: agent mentions, quick messages, experts, commands.
             Section("Insert") {
@@ -188,7 +221,7 @@ struct ComposeBar: View {
 
     @ViewBuilder
     private var actionButtons: some View {
-        if !isInFlight || canSend {
+        if !isInFlight || hasText || !attachments.isEmpty || preparingFileCount > 0 {
             Button(action: send) {
                 Image(systemName: isInFlight ? "text.badge.plus" : "arrow.up")
                     .font(.system(size: 16, weight: .bold))
@@ -248,21 +281,124 @@ struct ComposeBar: View {
     }
 
     private func handleFiles(_ result: Result<[URL], Error>) {
-        guard case .success(let urls) = result, !urls.isEmpty else { return }
-        let slots = remainingSlots
-        let attempted = urls.count
-        Task { @MainActor in
-            var prepared: [Attachment] = []
-            for url in urls.prefix(slots) {
-                if let attachment = await Task.detached(priority: .userInitiated, operation: {
-                    AttachmentPrep.make(fromFile: url)
-                }).value {
-                    prepared.append(attachment)
+        guard acceptsAttachmentResults, preparingFileCount == 0 else { return }
+        let urls: [URL]
+        switch result {
+        case .success(let selected):
+            urls = selected
+        case .failure(let error):
+            let failure = error as NSError
+            guard !(error is CancellationError),
+                  !(failure.domain == NSCocoaErrorDomain && failure.code == CocoaError.Code.userCancelled.rawValue) else { return }
+            onNotice(String(localized: "Couldn't open the selected files. Try selecting them again."))
+            return
+        }
+        guard !urls.isEmpty else { return }
+        let selected = Array(urls.prefix(remainingSlots))
+        guard !selected.isEmpty else {
+            onNotice(String(localized: "Some files weren't added because the attachment limit was reached."))
+            return
+        }
+
+        let preparationID = UUID()
+        filePreparationID = preparationID
+        preparingFileCount = selected.count
+        filePreparationTask = Task { @MainActor in
+            defer {
+                // An old completion must never clear a newer preparation's state.
+                if filePreparationID == preparationID {
+                    filePreparationID = nil
+                    filePreparationTask = nil
+                    preparingFileCount = 0
                 }
             }
-            if prepared.count < attempted { onNotice("Some images couldn't be added.") }
+            var prepared: [Attachment] = []
+            var failures: [String] = []
+            var omittedFailures = 0
+            for url in selected {
+                guard !Task.isCancelled, acceptsAttachmentResults,
+                      filePreparationID == preparationID else { return }
+                let worker = Task.detached(priority: .userInitiated) {
+                    try Task.checkCancellation()
+                    // Staging owns security scope, iCloud coordination and the
+                    // regular-file check; identified images keep their image prep.
+                    let attachment = try AttachmentPrep.makeFile(from: url)
+                    try Task.checkCancellation()
+                    return attachment
+                }
+                do {
+                    let attachment = try await withTaskCancellationHandler {
+                        try await worker.value
+                    } onCancel: {
+                        worker.cancel()
+                    }
+                    guard !Task.isCancelled, acceptsAttachmentResults,
+                          filePreparationID == preparationID else { return }
+                    prepared.append(attachment)
+                } catch {
+                    guard !Task.isCancelled, !(error is CancellationError), acceptsAttachmentResults,
+                          filePreparationID == preparationID else { return }
+                    // Bound the notice to three per-file errors plus summaries.
+                    // Never show NSError descriptions/userInfo: providers can
+                    // put private URLs and credentials in them.
+                    if failures.count < 3 {
+                        failures.append(Self.filePreparationFailure(error, name: url.lastPathComponent))
+                    } else {
+                        omittedFailures += 1
+                    }
+                }
+                preparingFileCount -= 1
+            }
+            guard !Task.isCancelled, acceptsAttachmentResults,
+                  filePreparationID == preparationID else { return }
+            if omittedFailures > 0 {
+                failures.append(String(localized: "\(omittedFailures) more files couldn't be added."))
+            }
+            if urls.count > selected.count {
+                failures.append(String(localized: "Some files weren't added because the attachment limit was reached."))
+            }
+            // The model's more specific budget notice takes precedence.
+            if !failures.isEmpty { onNotice(failures.joined(separator: "\n")) }
             if !prepared.isEmpty { onAddAttachments(prepared) }
         }
+    }
+
+    private func cancelFilePreparation() {
+        filePreparationID = nil
+        filePreparationTask?.cancel()
+        filePreparationTask = nil
+        preparingFileCount = 0
+    }
+
+    private static func filePreparationFailure(_ error: Error, name: String) -> String {
+        if let stagingError = error as? AttachmentFileError {
+            switch stagingError {
+            case .notARegularFile:
+                return String(localized: "Couldn't add “\(name)”. Choose a regular file; folders cannot be attached.")
+            case .emptyFile:
+                return String(localized: "Couldn't add “\(name)”. The file is empty.")
+            case .unreadableFile:
+                return String(localized: "Couldn't add “\(name)”. The file couldn't be read. Download it in Files and try again.")
+            case .changedFile:
+                return String(localized: "Couldn't add “\(name)”. The file changed during preparation. Select it again.")
+            }
+        }
+        let failure = error as NSError
+        if failure.domain == NSCocoaErrorDomain {
+            switch failure.code {
+            case CocoaError.Code.fileReadNoPermission.rawValue, CocoaError.Code.fileWriteNoPermission.rawValue:
+                return String(localized: "Couldn't add “\(name)”. Access to the file was denied.")
+            case CocoaError.Code.fileReadNoSuchFile.rawValue, CocoaError.Code.fileNoSuchFile.rawValue:
+                return String(localized: "Couldn't add “\(name)”. The file is no longer available.")
+            case CocoaError.Code.fileReadTooLarge.rawValue:
+                return String(localized: "Couldn't add “\(name)”. The file is too large.")
+            case CocoaError.Code.fileWriteOutOfSpace.rawValue:
+                return String(localized: "Couldn't add “\(name)”. There isn't enough space on this device.")
+            default:
+                break
+            }
+        }
+        return String(localized: "Couldn't add “\(name)”. Make sure it is a downloaded file and try again.")
     }
 
     /// Camera capture is a single image and small enough to prep inline on the

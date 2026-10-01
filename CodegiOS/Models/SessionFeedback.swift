@@ -17,16 +17,21 @@ struct QueuedSessionMessage: Identifiable {
     var failure: String?
 
     var previewText: String {
-        text.isEmpty ? String(localized: "Image message") : text
+        guard text.isEmpty else { return text }
+        return attachments.contains { !$0.isImage }
+            ? String(localized: "File message")
+            : String(localized: "Image message")
     }
 
     var steeringText: String { previewText }
     var canSteer: Bool {
         // @Agent routing is applied by acp_prompt, not the feedback endpoint.
         // Keep delegation drafts (and oversized notes) for ordinary delivery.
-        !text.contains("codeg://agent/") && steeringText.unicodeScalars.count <= 4096
+        attachments.allSatisfy(\.isReady)
+            && !text.contains("codeg://agent/")
+            && steeringText.unicodeScalars.count <= 4096
     }
     var blocks: [PromptInputBlock] {
-        (text.isEmpty ? [] : [.text(text)]) + attachments.map(\.promptInputBlock)
+        (text.isEmpty ? [] : [.text(text)]) + attachments.compactMap(\.promptInputBlock)
     }
 }

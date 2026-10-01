@@ -63,9 +63,10 @@ struct SessionMessageQueueView: View {
 
     private func queuedRow(_ message: QueuedSessionMessage) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            // Localize the image-only fallback in the view's current locale.
+            // Localize attachment-only fallbacks in the view's current locale.
             if message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("Image message")
+                Text(message.attachments.contains(where: { !$0.isImage })
+                     ? LocalizedStringKey("File message") : LocalizedStringKey("Image message"))
                     .font(.subheadline)
                     .foregroundStyle(Theme.textPrimary)
             } else {
@@ -75,9 +76,13 @@ struct SessionMessageQueueView: View {
                     .lineLimit(2)
             }
             if !message.attachments.isEmpty {
-                Label("Images: \(message.attachments.count)", systemImage: "photo.on.rectangle")
+                Label("Attachments: \(message.attachments.count)", systemImage: "paperclip")
                     .font(.caption2)
                     .foregroundStyle(Theme.textSecondary)
+                Text(verbatim: message.attachments.map(\.name).joined(separator: ", "))
+                    .font(.caption2)
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(2)
             }
             if let failure = message.failure, !message.isSending {
                 Text(verbatim: failure)
@@ -92,12 +97,12 @@ struct SessionMessageQueueView: View {
                 if message.failure != nil {
                     Button("Retry") { onRetry(message.id) }
                         .frame(minHeight: 44)
-                        .disabled(hasUnreadFeedback)
+                        .disabled(hasUnreadFeedback || !message.attachments.allSatisfy(\.isReady))
                         .opacity(message.isSending ? 0.5 : 1)
                 } else if !isRunning {
                     Button("Send") { onRetry(message.id) }
                         .frame(minHeight: 44)
-                        .disabled(hasUnreadFeedback)
+                        .disabled(hasUnreadFeedback || !message.attachments.allSatisfy(\.isReady))
                 }
                 Button { onRemove(message.id) } label: {
                     Image(systemName: "xmark")

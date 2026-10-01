@@ -1,45 +1,55 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// An image the user has attached to the next prompt. Image-only for now: the
-/// server's `PromptInputBlock` (and our `ContentBlock`) model `image` but not
-/// arbitrary `resource` files, so the "+" menu only accepts images. Holds the
-/// already-prepared (downscaled/compressed) bytes so the chip thumbnail and the
-/// wire payload come from the same source.
-///
-/// NOTE: the web client gates image attaching on the connection's
-/// `prompt_capabilities.image`. That capability is delivered as a live
-/// `prompt_capabilities` stream event on a persistent per-conversation
-/// connection, which this Phase-1 client does not maintain or model (same root
-/// as the agent-options probe seam). Image-unsupported agents are therefore not
-/// pre-gated here; such a turn surfaces the agent's error via the normal live-turn
-/// failure path rather than being blocked up front. Capability gating is a
-/// follow-up that depends on modeling live session/capability events.
+/// Images retain their compact inline payload. Other files own a local disk
+/// copy until uploaded, then send only a reference to the server's copy.
 struct Attachment: Identifiable, Hashable, Sendable {
     let id: UUID
     let name: String
     let mimeType: String
     let data: Data
+    let file: StagedAttachmentFile?
+    var uploaded: UploadedAttachment?
+    var uploadProgress: Double?
+    var uploadFailure: String?
 
     init(id: UUID = UUID(), name: String, mimeType: String, data: Data) {
         self.id = id
         self.name = name
         self.mimeType = mimeType
         self.data = data
+        self.file = nil
     }
 
-    var byteCount: Int { data.count }
+    init(id: UUID = UUID(), file: StagedAttachmentFile) {
+        self.id = id
+        self.name = file.name
+        self.mimeType = file.mimeType
+        self.data = Data()
+        self.file = file
+    }
+
+    var byteCount: Int { file.map { Int(clamping: $0.size) } ?? data.count }
     var base64: String { data.base64EncodedString() }
+    var isImage: Bool { file == nil }
+    var isReady: Bool { file == nil || (uploaded != nil && uploadProgress == nil && uploadFailure == nil) }
 
     /// The wire block sent in `acp_prompt`.
-    var promptInputBlock: PromptInputBlock {
-        .image(data: base64, mimeType: mimeType, uri: nil)
+    var promptInputBlock: PromptInputBlock? {
+        if isImage { return .image(data: base64, mimeType: mimeType, uri: nil) }
+        guard isReady, let uploaded else { return nil }
+        return .resourceLink(uri: uploaded.fileURI, name: uploaded.name, mimeType: uploaded.mimeType ?? mimeType)
     }
 
     /// The block used to render this image immediately in the optimistic user
     /// turn (decoded by `InlineImageView`).
     var optimisticBlock: ContentBlock {
-        .image(ImageData(data: base64, mimeType: mimeType, uri: nil))
+        if isImage { return .image(ImageData(data: base64, mimeType: mimeType, uri: nil)) }
+        guard let uploaded else { return .text(name) }
+        let label = name.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "[", with: "\\[")
+            .replacingOccurrences(of: "]", with: "\\]")
+        return .text("[\(label)](\(uploaded.fileURI))")
     }
 }
 
@@ -59,6 +69,18 @@ enum AttachmentPrep {
     static let maxTotalBytes = 1_300_000
     /// Max simultaneous attachments on one prompt (secondary to the byte budget).
     static let maxCount = 10
+
+    /// File-provider reads and disk copying run off the UI actor. Do not try to
+    /// decode arbitrary documents (or large images) into an in-memory bitmap.
+    static func makeFile(from url: URL) throws -> Attachment {
+        let file = try StagedAttachmentFile.copy(from: url)
+        if file.mimeType.hasPrefix("image/"), file.size <= Int64(maxBytes),
+           let raw = try? Data(contentsOf: file.url),
+           let image = make(fromImageData: raw, name: file.name) {
+            return image
+        }
+        return Attachment(file: file)
+    }
 
     /// Prepare an in-memory image (camera capture or Photos pick) as a
     /// downscaled JPEG attachment.
