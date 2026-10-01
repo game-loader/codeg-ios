@@ -4,6 +4,27 @@ import XCTest
 
 @MainActor
 final class SessionFileAttachmentTests: XCTestCase {
+    func testLargePickedImageRemainsAnInlineImageInsteadOfAFileLink() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("large.png")
+        let pixel = try XCTUnwrap(Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="))
+        try pixel.write(to: source)
+        let writer = try FileHandle(forWritingTo: source)
+        try writer.truncate(atOffset: UInt64(AttachmentPrep.maxBytes + 1024))
+        try writer.close()
+        let attachment = try AttachmentPrep.makeFile(from: source)
+        XCTAssertTrue(attachment.isImage)
+        XCTAssertTrue(attachment.isReady)
+        XCTAssertNil(attachment.file)
+        XCTAssertLessThan(attachment.byteCount, AttachmentPrep.maxTotalBytes)
+        guard let block = attachment.promptInputBlock, case .image = block else {
+            XCTFail("Picked images must retain native image content"); return
+        }
+    }
+
     private func eventually(_ predicate: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(5)
         while !predicate(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
@@ -183,6 +204,9 @@ final class SessionFileAttachmentTests: XCTestCase {
         let blocks = h.server.bodies("submit_session_feedback").first?["blocks"] as? [[String: Any]]
         XCTAssertEqual(blocks?.last?["type"] as? String, "resource_link")
         XCTAssertNil(blocks?.last?["data"])
+        let receipt = try XCTUnwrap(h.server.bodies("submit_session_feedback").first?["text"] as? String)
+        XCTAssertTrue(receipt.contains("[notes.pdf](file:///tmp/uploads/notes.pdf)"))
+        XCTAssertEqual(h.model.feedbackNotes.first?.text, receipt)
         XCTAssertEqual(h.model.draft, "Next draft")
         XCTAssertEqual(uploader.count, 1)
     }

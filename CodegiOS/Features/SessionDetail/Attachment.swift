@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import ImageIO
 
 /// Images retain their compact inline payload. Other files own a local disk
 /// copy until uploaded, then send only a reference to the server's copy.
@@ -41,15 +42,20 @@ struct Attachment: Identifiable, Hashable, Sendable {
         return .resourceLink(uri: uploaded.fileURI, name: uploaded.name, mimeType: uploaded.mimeType ?? mimeType)
     }
 
-    /// The block used to render this image immediately in the optimistic user
-    /// turn (decoded by `InlineImageView`).
-    var optimisticBlock: ContentBlock {
-        if isImage { return .image(ImageData(data: base64, mimeType: mimeType, uri: nil)) }
-        guard let uploaded else { return .text(name) }
-        let label = name.replacingOccurrences(of: "\\", with: "\\\\")
+    var fileReference: String? {
+        guard !isImage, let uploaded else { return nil }
+        let label = String(name.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+            .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "[", with: "\\[")
             .replacingOccurrences(of: "]", with: "\\]")
-        return .text("[\(label)](\(uploaded.fileURI))")
+        return "[\(label)](\(uploaded.fileURI))"
+    }
+
+    /// Optimistic turns use the same file reference the persisted transcript
+    /// renders, while images retain their prepared thumbnail bytes.
+    var optimisticBlock: ContentBlock {
+        if isImage { return .image(ImageData(data: base64, mimeType: mimeType, uri: nil)) }
+        return .text(fileReference ?? name)
     }
 }
 
@@ -77,6 +83,18 @@ enum AttachmentPrep {
         if file.mimeType.hasPrefix("image/"), file.size <= Int64(maxBytes),
            let raw = try? Data(contentsOf: file.url),
            let image = make(fromImageData: raw, name: file.name) {
+            return image
+        }
+        if file.mimeType.hasPrefix("image/"),
+           let source = CGImageSourceCreateWithURL(file.url as CFURL, nil),
+           let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: Int(maxDimension),
+                kCGImageSourceShouldCacheImmediately: true
+           ] as CFDictionary),
+           let image = make(from: UIImage(cgImage: thumbnail), name: file.name) {
+            try Task.checkCancellation()
             return image
         }
         return Attachment(file: file)

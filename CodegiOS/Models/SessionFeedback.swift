@@ -23,7 +23,11 @@ struct QueuedSessionMessage: Identifiable {
             : String(localized: "Image message")
     }
 
-    var steeringText: String { previewText }
+    var steeringText: String {
+        // Document references project to text-only server receipts. Include
+        // them here so accepting a queued steer does not lose its attachments.
+        ([previewText] + attachments.compactMap(\.fileReference)).joined(separator: "\n\n")
+    }
     var canSteer: Bool {
         // @Agent routing is applied by acp_prompt, not the feedback endpoint.
         // Keep delegation drafts (and oversized notes) for ordinary delivery.
