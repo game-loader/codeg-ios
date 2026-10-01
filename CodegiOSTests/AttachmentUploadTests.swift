@@ -103,6 +103,7 @@ final class AttachmentUploadTests: XCTestCase {
         let writer = try AttachmentFileIO.writer(at: source)
         do {
             try writer.truncate(atOffset: UInt64(size))
+            try writer.seek(toOffset: 0)
             try writer.write(contentsOf: Data("BEGIN".utf8))
             try writer.seek(toOffset: UInt64(size - 3))
             try writer.write(contentsOf: Data("END".utf8))
@@ -114,6 +115,7 @@ final class AttachmentUploadTests: XCTestCase {
         }
         let file = StagedAttachmentFile(url: source, name: "large.xlsx", mimeType: "application/vnd.ms-excel",
                                         size: size, ownerDirectory: directory)
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: source.path)[.size] as? NSNumber)?.int64Value, size)
         let payload = try AttachmentMultipartFile(file: file, sessionID: nil, boundary: "large-boundary")
         defer { payload.remove() }
         XCTAssertGreaterThan(payload.size, size)
