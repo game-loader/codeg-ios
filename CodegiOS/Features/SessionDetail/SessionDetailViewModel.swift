@@ -550,26 +550,30 @@ final class SessionDetailViewModel {
     private func prepareChatDirectory() async throws {
         guard folder == nil, chatDirPath == nil else { return }
         let task: Task<String, Error>
-        let id: UUID
-        if let existing = chatDirTask, let existingID = chatDirTaskID {
+        if let existing = chatDirTask {
             task = existing
-            id = existingID
         } else {
-            id = UUID()
-            task = Task { try await client.createChatDir() }
+            let id = UUID()
+            task = Task { [self] in
+                defer {
+                    if chatDirTaskID == id {
+                        chatDirTask = nil
+                        chatDirTaskID = nil
+                    }
+                }
+                let path = try await client.createChatDir()
+                try Task.checkCancellation()
+                guard viewActive, chatDirTaskID == id else { throw CancellationError() }
+                // The resource belongs to this draft, not an individual options
+                // apply. A cancelled waiter cannot discard another waiter's cwd.
+                chatDirPath = path
+                return path
+            }
             chatDirTask = task
             chatDirTaskID = id
         }
-        defer {
-            if chatDirTaskID == id {
-                chatDirTask = nil
-                chatDirTaskID = nil
-            }
-        }
-        let path = try await task.value
+        _ = try await task.value
         try Task.checkCancellation()
-        guard viewActive, chatDirTaskID == id else { throw CancellationError() }
-        chatDirPath = path
     }
 
     /// A draft started from a paper runs its research agent, in the paper's

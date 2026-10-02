@@ -164,6 +164,28 @@ final class SessionFolderlessChatTests: XCTestCase {
         XCTAssertEqual(h.server.bodies("acp_connect").last?["workingDir"] as? String, "/tmp/regression")
     }
 
+    func testRapidProjectAndChatSwitchSharesPendingScratchWithNewResolution() async throws {
+        let h = try RecoveryHarness(newRequest: NewSessionRequest())
+        defer { h.close() }
+        await h.model.load()
+        let gate = h.server.holdNext("create_chat_dir")
+        defer { gate.release() }
+        let oldOptions = Task { try await h.model.resolveConnectionForOptions() }
+        try await eventually { gate.hasRequest }
+        h.model.selectFolder(try XCTUnwrap(h.model.availableFolders.first))
+        h.model.selectFolder(nil)
+        let newOptions = Task { try await h.model.resolveConnectionForOptions() }
+        gate.release()
+        do { _ = try await oldOptions.value; XCTFail("Old apply must be cancelled") }
+        catch is CancellationError {}
+        _ = try await newOptions.value
+        XCTAssertEqual(h.server.count("create_chat_dir"), 1)
+        XCTAssertEqual(h.server.count("acp_connect"), 1)
+        XCTAssertEqual(h.server.bodies("acp_connect").first?["workingDir"] as? String,
+                       RecoveryFixtures.chatPath)
+        XCTAssertNil(h.model.folder)
+    }
+
     func testRejectedFirstPromptRestoresFolderlessDraftAndWaitsForDeletionBeforeRetry() async throws {
         let h = try RecoveryHarness(newRequest: NewSessionRequest())
         defer { h.close() }
