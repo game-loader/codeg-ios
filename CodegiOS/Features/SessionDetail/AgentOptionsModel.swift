@@ -333,6 +333,9 @@ final class AgentOptionsModel {
     func teardown() {
         loadTask?.cancel()
         loadTask = nil
+        // Switching a draft's folder cancels its probe. Let prepare() start a
+        // new probe instead of retaining an abandoned loading phase forever.
+        if phase == .loading { phase = .idle }
         autoLoadTask?.cancel()
         autoLoadTask = nil
         connectionTask?.cancel()

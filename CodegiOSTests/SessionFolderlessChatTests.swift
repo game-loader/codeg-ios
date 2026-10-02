@@ -376,6 +376,24 @@ final class SessionFolderlessChatTests: XCTestCase {
         XCTAssertTrue(h.server.unexpectedRequests.isEmpty)
     }
 
+    func testSwitchingProjectDuringOptionsProbeRestartsInCorrectDirectory() async throws {
+        let h = try RecoveryHarness(newRequest: NewSessionRequest())
+        defer { h.close() }
+        await h.model.load()
+        let gate = h.server.holdNext("acp_describe_agent_options")
+        defer { gate.release() }
+        h.model.agentOptions.prepare(agentType: .claudeCode, workingDir: nil)
+        try await eventually { gate.hasRequest }
+        let project = try XCTUnwrap(h.model.availableFolders.first)
+        h.model.selectFolder(project)
+        h.model.agentOptions.prepare(agentType: .claudeCode, workingDir: project.path)
+        try await eventually { h.model.agentOptions.phase == .loaded }
+        XCTAssertEqual(h.server.count("acp_describe_agent_options"), 2)
+        XCTAssertEqual(h.server.bodies("acp_describe_agent_options").last?["workingDir"] as? String, project.path)
+        XCTAssertEqual(h.server.count("create_chat_conversation"), 0)
+        XCTAssertTrue(h.server.unexpectedRequests.isEmpty)
+    }
+
     func testProjectBackedAcademicDraftRetainsFolderAndPaperBinding() async throws {
         let request = NewSessionRequest(preselectedFolderID: 7, academic: AcademicDraft(
             paperID: "paper-2", paperTitle: "Repository paper", agent: .codex, chatMode: false))
