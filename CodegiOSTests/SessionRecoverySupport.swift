@@ -80,6 +80,7 @@ final class RecoveryServer: @unchecked Sendable {
     private var routeGates: [String: RecoveryResponseGate] = [:]
     private var routeStatuses: [String: Int] = [:]
     private var nextChatConversationID = 42
+    private var reservedChatPaths: Set<String> = []
 
     init(agentType: AgentType = .claudeCode) {
         self.agentType = agentType
@@ -173,14 +174,26 @@ final class RecoveryServer: @unchecked Sendable {
             case "acp_find_connection_for_conversation": payload = connection
             case "acp_connect": payload = "connection-42"
             case "create_conversation": payload = 42
-            case "create_chat_dir": payload = ["path": RecoveryFixtures.chatPath]
+            case "create_chat_dir":
+                let number = counts[route]!
+                payload = ["path": number == 1 ? RecoveryFixtures.chatPath : "\(RecoveryFixtures.chatPath)-\(number)"]
             case "create_chat_conversation":
-                let id = nextChatConversationID; nextChatConversationID += 1
-                payload = ["conversationId": id, "folderId": 8, "folder": RecoveryFixtures.chatFolder]
-                var summary = detail["summary"] as! [String: Any]
-                summary["id"] = id; summary["folder_id"] = 8
-                summary["agent_type"] = body["agentType"]
-                detail["summary"] = summary
+                let path = body["existingDir"] as? String ?? RecoveryFixtures.chatPath
+                // Match the backend: add_chat_folder always INSERTs and path is
+                // UNIQUE even for soft-deleted or compensated folder rows.
+                if !reservedChatPaths.insert(path).inserted {
+                    status = 500; payload = ["error": "UNIQUE constraint failed: folder.path"]
+                } else {
+                    let id = nextChatConversationID; nextChatConversationID += 1
+                    let folderID = id - 34
+                    var folder = RecoveryFixtures.chatFolder
+                    folder["id"] = folderID; folder["path"] = path
+                    payload = ["conversationId": id, "folderId": folderID, "folder": folder]
+                    var summary = detail["summary"] as! [String: Any]
+                    summary["id"] = id; summary["folder_id"] = folderID
+                    summary["agent_type"] = body["agentType"]
+                    detail["summary"] = summary
+                }
             case "delete_conversation": break
             case "acp_prompt":
                 promptID = body["clientMessageId"] as? String
@@ -199,6 +212,13 @@ final class RecoveryServer: @unchecked Sendable {
             case "acp_get_session_snapshot_by_conversation": break
             case "acp_get_session_snapshot":
                 payload = connectionSnapshot; gate = snapshotGate; snapshotGate = nil
+            case "acp_describe_agent_options":
+                payload = ["modes": RecoveryFixtures.modes(), "config_options": []]
+            case "acp_set_mode":
+                connectionSnapshot = ["status": "connected", "modes": RecoveryFixtures.modes(
+                    current: body["modeId"] as? String ?? "default")]
+            case "read_file_preview":
+                payload = ["path": body["path"] as? String ?? "notes.txt", "content": "Chat file"]
             default: unexpected.append(route); status = 500
             }
             if let held = routeGates.removeValue(forKey: route) {
@@ -275,6 +295,11 @@ enum RecoveryFixtures {
         "id": 8, "name": "Chat", "path": chatPath, "kind": "chat",
         "last_opened_at": date, "sort_order": 0, "color": "blue"
     ]
+    static func modes(current: String = "default") -> [String: Any] {
+        ["current_mode_id": current, "available_modes": [
+            ["id": "default", "name": "Default"], ["id": "plan", "name": "Plan"]
+        ]]
+    }
     static func detail(text: String, status: String = "pending_review", agentType: AgentType = .claudeCode) -> [String: Any] {
         ["summary": ["id": 42, "folder_id": 7, "title": "Recovery",
                      "agent_type": agentType.rawValue, "status": status,
@@ -326,6 +351,7 @@ final class RecoveryHarness {
     let server: RecoveryServer
     let host = "\(UUID().uuidString.lowercased()).session-recovery.invalid"
     let session: URLSession
+    let client: CodegClient
     var streams: [RecoveryEventStream] = []
     var nextSnapshot: LiveSessionSnapshot
     var nextDeliversSnapshot = true
@@ -339,7 +365,7 @@ final class RecoveryHarness {
         config.protocolClasses = [RecoveryURLProtocol.self]
         config.timeoutIntervalForRequest = 3; config.timeoutIntervalForResource = 5
         session = URLSession(configuration: config)
-        let client = CodegClient(baseURL: URL(string: "https://\(host)")!, token: "test",
+        client = CodegClient(baseURL: URL(string: "https://\(host)")!, token: "test",
                                  session: session, readSession: session)
         let factory: () -> any SessionEventStream = { [unowned self] in
             let stream = RecoveryEventStream(snapshot: self.nextSnapshot, deliversSnapshot: self.nextDeliversSnapshot)

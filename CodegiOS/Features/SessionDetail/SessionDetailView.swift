@@ -100,7 +100,7 @@ struct SessionDetailView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     AgentOptionsButton(
                         agentType: model.agentTypeForUI,
-                        workingDir: model.projectFolder?.path,
+                        workingDir: model.folder?.path,
                         isBusy: model.isInFlight,
                         options: model.agentOptions,
                         newSession: model.isDraftEditable ? NewSessionAgentConfig(

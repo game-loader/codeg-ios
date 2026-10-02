@@ -37,6 +37,9 @@ final class AgentOptionsModel {
 
     /// Injected by the owner to resolve (and cache) the shared chat connection.
     var resolveConnection: (() async throws -> String)?
+    /// Resolve the same cwd used by the prompt, including a folderless draft's
+    /// scratch directory before probing workspace-dependent options.
+    var resolveWorkingDirectory: (() async throws -> String?)?
 
     /// Injected by the owner to fetch the authoritative live session snapshot for
     /// this conversation (nil when no live session exists).
@@ -146,7 +149,14 @@ final class AgentOptionsModel {
             if Task.isCancelled { return }
             self.phase = .loading   // no live selectors — a probe agent is now starting
             do {
-                let probe = try await self.client.describeAgentOptions(agentType: agentType, workingDir: workingDir)
+                let probeDir: String?
+                if let resolveWorkingDirectory = self.resolveWorkingDirectory {
+                    probeDir = try await resolveWorkingDirectory()
+                } else {
+                    probeDir = workingDir
+                }
+                try Task.checkCancellation()
+                let probe = try await self.client.describeAgentOptions(agentType: agentType, workingDir: probeDir)
                 if Task.isCancelled { return }
                 self.cache[agentType] = probe
                 self.applyCatalog(probe)

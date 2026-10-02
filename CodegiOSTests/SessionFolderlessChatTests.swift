@@ -89,6 +89,7 @@ final class SessionFolderlessChatTests: XCTestCase {
         let h = try RecoveryHarness(newRequest: NewSessionRequest())
         defer { h.close() }
         await h.model.load()
+        h.server.setConnectionSnapshot(["status": "connected"])
         let gate = h.server.holdNext("create_chat_dir")
         defer { gate.release() }
         let first = Task { try await h.model.resolveConnectionForOptions() }
@@ -203,14 +204,21 @@ final class SessionFolderlessChatTests: XCTestCase {
         XCTAssertTrue(h.model.isDraftEditable)
         XCTAssertEqual(h.model.draft, "Retry this ordinary chat")
         h.model.send()
+        // Let the retry pipeline actually run while deletion is still held.
+        // Without the wait it would already request a fresh directory/row.
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(h.server.count("create_chat_dir"), 1)
         XCTAssertEqual(h.server.count("create_chat_conversation"), 1)
         deleteGate.release()
         try await eventually { h.server.count("acp_prompt") == 2 && !h.model.isSubmittingPrompt }
         XCTAssertEqual(h.server.count("create_chat_conversation"), 2)
         XCTAssertEqual(h.server.count("create_conversation"), 0)
-        XCTAssertEqual(h.server.count("create_chat_dir"), 1)
+        XCTAssertEqual(h.server.count("create_chat_dir"), 2)
         XCTAssertEqual(h.server.count("acp_connect"), 2)
         XCTAssertEqual(h.model.conversationID, 43)
+        XCTAssertEqual(h.model.folder?.path, "\(RecoveryFixtures.chatPath)-2")
+        XCTAssertEqual(h.server.bodies("create_chat_conversation").compactMap { $0["existingDir"] as? String },
+                       [RecoveryFixtures.chatPath, "\(RecoveryFixtures.chatPath)-2"])
         XCTAssertTrue(h.server.unexpectedRequests.isEmpty)
     }
 
@@ -231,8 +239,10 @@ final class SessionFolderlessChatTests: XCTestCase {
         h.model.send()
         try await eventually { h.server.count("acp_prompt") == 1 && !h.model.isSubmittingPrompt }
         XCTAssertEqual(h.server.count("create_chat_conversation"), 2)
-        XCTAssertEqual(h.server.count("create_chat_dir"), 1)
+        XCTAssertEqual(h.server.count("create_chat_dir"), 2)
         XCTAssertEqual(h.server.count("create_conversation"), 0)
+        XCTAssertEqual(h.server.bodies("acp_connect").last?["workingDir"] as? String,
+                       "\(RecoveryFixtures.chatPath)-2")
     }
 
     func testReopenedChatUsesHiddenFolderCwdWithoutShowingProjectControls() async throws {
@@ -249,6 +259,10 @@ final class SessionFolderlessChatTests: XCTestCase {
         XCTAssertNil(h.model.projectFolder)
         XCTAssertNil(h.model.currentBranch)
         XCTAssertNil(h.model.displayFolderName)
+        let root = try XCTUnwrap(h.model.folder?.path)
+        let preview = try await h.client.readFilePreview(rootPath: root, path: "notes.txt")
+        XCTAssertEqual(preview.content, "Chat file")
+        XCTAssertEqual(h.server.bodies("read_file_preview").first?["rootPath"] as? String, RecoveryFixtures.chatPath)
         let branches = await h.model.loadBranches()
         XCTAssertNil(branches)
         h.model.draft = "Continue ordinary chat"
@@ -257,6 +271,125 @@ final class SessionFolderlessChatTests: XCTestCase {
         XCTAssertEqual(h.server.bodies("acp_connect").first?["workingDir"] as? String,
                        RecoveryFixtures.chatPath)
         XCTAssertEqual(h.server.count("create_chat_conversation"), 0)
+        XCTAssertTrue(h.server.unexpectedRequests.isEmpty)
+    }
+
+    func testExplicitProjectUsesOpenFolderIfFullFolderLookupFails() async throws {
+        let h = try RecoveryHarness(newSession: true)
+        defer { h.close() }
+        let gate = h.server.holdNext("list_all_folder_details", httpStatus: 503)
+        defer { gate.release() }
+        let load = Task { await h.model.load() }
+        try await eventually { gate.hasRequest }
+        h.model.selectAgent(.codex)
+        h.model.draft = "Don't send in the wrong directory"
+        h.model.send()
+        XCTAssertEqual(h.model.phase, .loading)
+        XCTAssertEqual(h.server.count("create_chat_conversation"), 0)
+        XCTAssertEqual(h.server.count("create_conversation"), 0)
+        gate.release()
+        await load.value
+        XCTAssertEqual(h.model.projectFolder?.id, 7)
+        h.model.send()
+        try await eventually { h.server.count("acp_prompt") == 1 && !h.model.isSubmittingPrompt }
+        XCTAssertEqual(h.server.count("create_conversation"), 1)
+        XCTAssertEqual(h.server.count("create_chat_conversation"), 0)
+    }
+
+    func testUnavailableExplicitProjectFailsLoadAndCanRetrySafely() async throws {
+        let h = try RecoveryHarness(newSession: true)
+        defer { h.close() }
+        h.server.setFolders([])
+        await h.model.load()
+        guard case .failed = h.model.phase else { return XCTFail("Missing project must fail load") }
+        h.model.draft = "Keep the project binding"
+        h.model.send()
+        XCTAssertEqual(h.server.count("create_chat_conversation"), 0)
+        XCTAssertEqual(h.model.draft, "Keep the project binding")
+        h.server.setFolders([RecoveryFixtures.folder])
+        await h.model.load()
+        XCTAssertEqual(h.model.phase, .loaded)
+        XCTAssertEqual(h.model.projectFolder?.id, 7)
+    }
+
+    func testDeadDraftOptionsConnectionIsReplacedWithoutChangingScratch() async throws {
+        let h = try RecoveryHarness(newRequest: NewSessionRequest())
+        defer { h.close() }
+        await h.model.load()
+        _ = try await h.model.resolveConnectionForOptions()
+        h.server.setConnectionSnapshot(nil)
+        _ = try await h.model.resolveConnectionForOptions()
+        XCTAssertEqual(h.server.count("acp_connect"), 2)
+        XCTAssertEqual(h.server.count("create_chat_dir"), 1)
+        h.server.setConnectionSnapshot(["status": "connected"])
+        _ = try await h.model.resolveConnectionForOptions()
+        XCTAssertEqual(h.server.count("acp_connect"), 2)
+        h.server.setConnectionSnapshot(["status": "disconnected"])
+        _ = try await h.model.resolveConnectionForOptions()
+        XCTAssertEqual(h.server.count("acp_connect"), 3)
+        XCTAssertEqual(h.server.count("create_chat_dir"), 1)
+        XCTAssertTrue(h.server.unexpectedRequests.isEmpty)
+    }
+
+    func testOptionsProbeAndModeApplyUseOrdinaryChatScratchAndFirstSendReusesIt() async throws {
+        let h = try RecoveryHarness(newRequest: NewSessionRequest())
+        defer { h.close() }
+        let preferences = UserDefaults.standard.object(forKey: "codeg.selectorPrefs.v1")
+        defer { UserDefaults.standard.set(preferences, forKey: "codeg.selectorPrefs.v1") }
+        await h.model.load()
+        h.model.agentOptions.prepare(agentType: .claudeCode, workingDir: nil)
+        try await eventually { h.model.agentOptions.phase == .loaded }
+        XCTAssertEqual(h.server.bodies("acp_describe_agent_options").first?["workingDir"] as? String,
+                       RecoveryFixtures.chatPath)
+        let mode = h.model.agentOptions.selectedModeId == "plan" ? "default" : "plan"
+        h.model.agentOptions.selectMode(mode)
+        try await eventually {
+            h.server.count("acp_set_mode") == 1 && h.model.agentOptions.applying.isEmpty
+        }
+        XCTAssertEqual(h.model.agentOptions.selectedModeId, mode)
+        h.model.draft = "Use the applied mode"
+        h.model.send()
+        try await eventually { h.server.count("acp_prompt") == 1 && !h.model.isSubmittingPrompt }
+        XCTAssertEqual(h.server.count("acp_connect"), 1)
+        XCTAssertEqual(h.server.count("create_chat_dir"), 1)
+        XCTAssertEqual(h.server.bodies("create_chat_conversation").first?["existingDir"] as? String,
+                       RecoveryFixtures.chatPath)
+        XCTAssertTrue(h.server.unexpectedRequests.isEmpty)
+    }
+
+    func testReopenedChatProbesOptionsInHiddenFolderDirectory() async throws {
+        let h = try RecoveryHarness()
+        defer { h.close() }
+        var detail = RecoveryFixtures.detail(text: "Chat reply")
+        var summary = detail["summary"] as! [String: Any]
+        summary["folder_id"] = 8; detail["summary"] = summary
+        h.server.setDetailPayload(detail)
+        h.server.setFolders([RecoveryFixtures.chatFolder])
+        await h.model.load()
+        // Even a stale/missing UI context must resolve the real prompt cwd.
+        h.model.agentOptions.prepare(agentType: .claudeCode, workingDir: nil)
+        try await eventually { h.model.agentOptions.phase == .loaded }
+        XCTAssertEqual(h.server.bodies("acp_describe_agent_options").first?["workingDir"] as? String,
+                       RecoveryFixtures.chatPath)
+        XCTAssertEqual(h.server.count("create_chat_dir"), 0)
+        XCTAssertNil(h.model.projectFolder)
+        XCTAssertTrue(h.server.unexpectedRequests.isEmpty)
+    }
+
+    func testProjectBackedAcademicDraftRetainsFolderAndPaperBinding() async throws {
+        let request = NewSessionRequest(preselectedFolderID: 7, academic: AcademicDraft(
+            paperID: "paper-2", paperTitle: "Repository paper", agent: .codex, chatMode: false))
+        let h = try RecoveryHarness(newRequest: request)
+        defer { h.close() }
+        await h.model.load()
+        XCTAssertEqual(h.model.projectFolder?.id, 7)
+        h.model.draft = "Explain the repository"
+        h.model.send()
+        try await eventually { h.server.count("acp_prompt") == 1 && !h.model.isSubmittingPrompt }
+        XCTAssertEqual(h.server.bodies("create_conversation").first?["academicPaperId"] as? String, "paper-2")
+        XCTAssertEqual(h.server.count("create_chat_conversation"), 0)
+        XCTAssertEqual(h.server.count("create_chat_dir"), 0)
+        XCTAssertEqual(h.server.bodies("acp_connect").first?["workingDir"] as? String, "/tmp/regression")
         XCTAssertTrue(h.server.unexpectedRequests.isEmpty)
     }
 

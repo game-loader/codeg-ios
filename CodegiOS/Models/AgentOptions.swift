@@ -56,6 +56,7 @@ struct SessionModeState: Hashable, Sendable, Decodable {
 /// both to load the sheet and to reconcile after an apply. Decode-only; the many
 /// other snapshot fields are ignored.
 struct SessionSnapshot: Hashable, Sendable, Decodable {
+    let status: String?
     let nativeSteeringAvailable: Bool
     let modes: SessionModeState?
     let currentMode: String?
@@ -66,11 +67,12 @@ struct SessionSnapshot: Hashable, Sendable, Decodable {
     let availableCommands: [AvailableCommandInfo]
 
     private enum CodingKeys: String, CodingKey {
-        case modes, currentMode, configOptions, selectorsReady, availableCommands, nativeSteeringAvailable
+        case status, modes, currentMode, configOptions, selectorsReady, availableCommands, nativeSteeringAvailable
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        status = try c.decodeIfPresent(String.self, forKey: .status)
         nativeSteeringAvailable = try c.decodeIfPresent(Bool.self, forKey: .nativeSteeringAvailable) ?? false
         modes = try c.decodeIfPresent(SessionModeState.self, forKey: .modes)
         currentMode = try c.decodeIfPresent(String.self, forKey: .currentMode)
@@ -84,6 +86,8 @@ struct SessionSnapshot: Hashable, Sendable, Decodable {
     var hasSelectors: Bool {
         !(modes?.availableModes.isEmpty ?? true) || !(configOptions?.isEmpty ?? true)
     }
+
+    var isConnectionAlive: Bool { status != "error" && status != "disconnected" }
 
     /// View as the catalog shape the sheet renders.
     var asOptionsSnapshot: AgentOptionsSnapshot {

@@ -273,6 +273,15 @@ final class SessionDetailViewModel {
             guard let self else { throw APIError.transport("Session closed.") }
             return try await self.resolveConnectionForOptions()
         }
+        agentOptions.resolveWorkingDirectory = { [weak self] in
+            guard let self else { throw APIError.transport("Session closed.") }
+            guard self.phase == .loaded else { throw APIError.transport(String(localized: "Loading options…")) }
+            let generation = self.draftConnectionGeneration
+            if self.newRequest != nil, self.folder == nil { try await self.prepareChatDirectory() }
+            try Task.checkCancellation()
+            guard self.viewActive, generation == self.draftConnectionGeneration else { throw CancellationError() }
+            return self.workingDirectory
+        }
         // The authoritative current mode/config for this conversation's live
         // session (nil when none is live). Used to load the sheet and to reconcile
         // after an apply, since the set_* routes only enqueue the change.
@@ -343,7 +352,7 @@ final class SessionDetailViewModel {
 
     /// The draft's agent/folder are still editable: a new session whose first
     /// send hasn't started yet (after that the conversation is being created).
-    var isDraftEditable: Bool { isNewSession && !hasStartedFirstSend && newRequest?.academic == nil }
+    var isDraftEditable: Bool { isNewSession && phase == .loaded && !hasStartedFirstSend && newRequest?.academic == nil }
 
     /// Chat folders are an internal cwd, not a user-selected project.
     var projectFolder: FolderDetail? { folder?.kind == .chat ? nil : folder }
@@ -489,21 +498,26 @@ final class SessionDetailViewModel {
             }
 
         case .new(let request):
-            // A blank draft: show the composer immediately, then populate the
-            // folder + agent lists so the in-page pickers (the nav-bar agent
-            // button) are ready. Nothing is sent until the user writes + taps send.
-            phase = .loaded
+            // Resolve an explicit project before enabling compose; a slow or
+            // failed lookup must never silently turn a project task into chat.
             guard !didLoadDraftOptions else { return }
             didLoadDraftOptions = true
-            await loadDraftOptions(preselectedFolderID: request.preselectedFolderID)
-            if let academic = request.academic { await prepareAcademicDraft(academic) }
+            phase = .loading
+            do {
+                try await loadDraftOptions(preselectedFolderID: request.preselectedFolderID)
+                if let academic = request.academic { await prepareAcademicDraft(academic) }
+                phase = .loaded
+            } catch {
+                didLoadDraftOptions = false
+                phase = .failed(Self.describe(error))
+            }
         }
     }
 
     /// Populate the draft's folder/agent lists and pick sensible defaults
     /// (explicit project only; its default agent → first installed). General
     /// new-session requests stay folderless, even when projects are available.
-    private func loadDraftOptions(preselectedFolderID: Int?) async {
+    private func loadDraftOptions(preselectedFolderID: Int?) async throws {
         // The picker lists top-level open folders only (a new session shouldn't
         // target a worktree directly). The full set resolves a preselected folder
         // that the picker omits — e.g. a worktree the branch switcher just opened a
@@ -526,8 +540,12 @@ final class SessionDetailViewModel {
         allFolders = all
         availableFolders = FolderVisibility.filterTopLevel(open).filter { $0.kind != .chat }
             .sorted { $0.lastOpenedAt > $1.lastOpenedAt }
-        if !didSelectDraftFolder, !hasStartedFirstSend, let preselectedFolderID {
-            folder = all.first { $0.id == preselectedFolderID && $0.kind != .chat }
+        if !didSelectDraftFolder, !hasStartedFirstSend,
+           newRequest?.academic?.chatMode != true, let preselectedFolderID {
+            guard let selected = (all + open).first(where: { $0.id == preselectedFolderID && $0.kind != .chat }) else {
+                throw APIError.transport(String(localized: "The selected folder couldn't be loaded. Try again."))
+            }
+            folder = selected
         }
         currentBranch = projectFolder?.gitBranch
         if selectedAgent == nil {
@@ -1071,6 +1089,7 @@ final class SessionDetailViewModel {
     /// composer's draft or attachments, so a message the user was typing survives;
     /// a rejected send still restores the text into the composer so it isn't lost.
     func send(overrideText: String? = nil, queuedMessage: QueuedSessionMessage? = nil) {
+        guard phase == .loaded else { return }
         let text = (overrideText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         let sending = queuedMessage?.attachments ?? (overrideText == nil ? attachments : [])
         guard sending.allSatisfy(\.isReady) else {
@@ -1308,6 +1327,7 @@ final class SessionDetailViewModel {
     /// the next send reuses the same connection.
     func resolveConnectionForOptions() async throws -> String {
         guard viewActive else { throw CancellationError() }
+        guard phase == .loaded else { throw APIError.transport(String(localized: "Loading options…")) }
         if conversationID == nil { return try await resolveDraftConnection() }
         if let id = conversationID,
            let found = try await client.findConnection(
@@ -1333,7 +1353,6 @@ final class SessionDetailViewModel {
     /// Resolve once for a draft; selection changes and navigation invalidate the
     /// result before it can be cached or used by an out-of-date options apply.
     private func resolveDraftConnection() async throws -> String {
-        if let existing = connectionID { return existing }
         if let task = draftConnectionTask { return try await task.value }
         let generation = draftConnectionGeneration
         let agent = agentTypeForUI
@@ -1341,6 +1360,18 @@ final class SessionDetailViewModel {
         let id = UUID()
         let task = Task { [self] in
             do {
+                if let existing = connectionID {
+                    let snapshot: SessionSnapshot?
+                    do {
+                        snapshot = try await client.connectionSnapshot(connectionId: existing)
+                    } catch let error as APIError where error.isStaleConnection {
+                        snapshot = nil
+                    }
+                    try Task.checkCancellation()
+                    guard viewActive, generation == draftConnectionGeneration else { throw CancellationError() }
+                    if snapshot?.isConnectionAlive == true { return existing }
+                    connectionID = nil
+                }
                 if folder == nil { try await prepareChatDirectory() }
                 try Task.checkCancellation()
                 guard viewActive, generation == draftConnectionGeneration else { throw CancellationError() }
@@ -1403,8 +1434,8 @@ final class SessionDetailViewModel {
     /// row was already created). On failure it throws into `runSend`'s `catch`,
     /// which rolls the optimistic send back.
     private func ensureConversationCreated(firstPromptText text: String) async throws {
-        // Complete deletion of a rejected first send before recreating its chat
-        // folder; otherwise late cleanup could retire the retry's folder.
+        // Complete deletion of a rejected first send before creating the retry,
+        // so its empty conversation is retired before the next one appears.
         if let rollback = draftRollbackTask { await rollback.value }
         draftRollbackTask = nil
         try Task.checkCancellation()
@@ -1422,12 +1453,22 @@ final class SessionDetailViewModel {
             // Ordinary and paper-only chats use the same API. Reuse the cwd
             // created for options, or allocate one before first-send connects.
             try await prepareChatDirectory()
-            let created = try await client.createChatConversation(
-                agentType: agent,
-                title: Self.draftTitle(from: text),
-                academicPaperId: paperID,
-                existingDir: chatDirPath
-            )
+            let created: ChatConversationCreated
+            do {
+                created = try await client.createChatConversation(
+                    agentType: agent,
+                    title: Self.draftTitle(from: text),
+                    academicPaperId: paperID,
+                    existingDir: chatDirPath
+                )
+            } catch {
+                // A failed/uncertain creation may have reserved this unique
+                // folder path, even after server-side compensation. Retry in a
+                // fresh cwd rather than inserting the same soft-deleted path.
+                chatDirPath = nil
+                resetDraftConnection()
+                throw error
+            }
             id = created.conversationId
             folder = created.folder
             chatDirPath = created.folder.path
@@ -2205,12 +2246,14 @@ final class SessionDetailViewModel {
             summary = nil
             sessionStats = nil
             if folder?.kind == .chat {
-                chatDirPath = folder?.path
+                // Deletion soft-deletes the hidden folder; its path remains
+                // unique in the database, so a retry needs a new scratch dir.
+                chatDirPath = nil
                 folder = nil
                 currentBranch = nil
             }
             // The connection was bound to the deleted conversation. A retry
-            // needs a fresh session in the same cwd, with the saved selectors.
+            // needs a fresh session with the saved selectors.
             resetDraftConnection()
             draftRollbackTask = Task { [weak self] in
                 try? await self?.client.deleteConversation(conversationId: createdID)

@@ -1,6 +1,22 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "The selected folder couldn't be loaded. Try again.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The selected folder couldn't be loaded. Try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法加载所选文件夹，请重试。"
+          }
+        }
+      }
+    },
     "Notifications": {
       "localizations": {
         "en": {
