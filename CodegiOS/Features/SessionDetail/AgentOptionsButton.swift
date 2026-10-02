@@ -9,7 +9,7 @@ struct NewSessionAgentConfig {
     let onSelectAgent: (AgentType) -> Void
     let availableFolders: [FolderDetail]
     let selectedFolder: FolderDetail?
-    let onSelectFolder: (FolderDetail) -> Void
+    let onSelectFolder: (FolderDetail?) -> Void
 }
 
 /// What a branch switch resolved to, so the picker knows whether to dismiss in
@@ -118,7 +118,7 @@ private struct AgentOptionsSheet: View {
                         // Folder + branch share one "Workspace" card: the folder
                         // (switchable on a draft, read-only on an existing session)
                         // above the branch selector.
-                        if let branch, branch.folderPath != nil {
+                        if newSession != nil || branch != nil {
                             workspaceSection(newSession: newSession, branch: branch)
                         }
 
@@ -225,17 +225,19 @@ private struct AgentOptionsSheet: View {
 
     /// Folder + branch grouped in a single card. The folder is the switchable
     /// draft picker when `newSession` is set, else a read-only row (an existing
-    /// conversation is bound to its working dir); the branch row is switchable in
-    /// both cases.
-    private func workspaceSection(newSession ns: NewSessionAgentConfig?, branch: SessionBranchConfig) -> some View {
+    /// conversation is bound to its working dir). Ordinary chats keep the folder
+    /// row but have no project path or branch controls.
+    private func workspaceSection(newSession ns: NewSessionAgentConfig?, branch: SessionBranchConfig?) -> some View {
         OptionSection(title: Text("Workspace")) {
             if let ns {
                 folderMenuRow(ns)
-            } else {
+            } else if let branch {
                 folderReadOnlyRow(branch)
             }
-            rowSeparator
-            branchLinkRow(branch)
+            if let branch, branch.folderPath != nil {
+                rowSeparator
+                branchLinkRow(branch)
+            }
         }
     }
 
@@ -243,20 +245,23 @@ private struct AgentOptionsSheet: View {
         let binding = Binding<Int?>(
             get: { ns.selectedFolder?.id },
             set: { id in
-                guard let folder = ns.availableFolders.first(where: { $0.id == id }) else { return }
+                let folder = id.flatMap { id in ns.availableFolders.first { $0.id == id } }
+                guard id == nil || folder != nil else { return }
                 ns.onSelectFolder(folder)
-                options.prepare(agentType: ns.selectedAgent, workingDir: folder.path)
+                options.prepare(agentType: ns.selectedAgent, workingDir: folder?.path)
             }
         )
         return Menu {
             Picker("Folder", selection: binding) {
+                Label("Ordinary chat", systemImage: "bubble.left.and.bubble.right")
+                    .tag(nil as Int?)
                 ForEach(ns.availableFolders) { folder in
                     Label(folder.displayName, systemImage: "folder").tag(Optional(folder.id))
                 }
             }
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: "folder.fill")
+                Image(systemName: ns.selectedFolder == nil ? "bubble.left.and.bubble.right" : "folder.fill")
                     .font(.caption)
                     .foregroundStyle(Theme.accent)
                 VStack(alignment: .leading, spacing: 1) {
@@ -266,7 +271,7 @@ private struct AgentOptionsSheet: View {
                             .foregroundStyle(Theme.textPrimary)
                             .lineLimit(1)
                     } else {
-                        Text("Choose a folder")
+                        Text("Ordinary chat")
                             .font(.callout.weight(.medium))
                             .foregroundStyle(Theme.textPrimary)
                             .lineLimit(1)
@@ -277,6 +282,11 @@ private struct AgentOptionsSheet: View {
                             .foregroundStyle(Theme.textTertiary)
                             .lineLimit(1)
                             .truncationMode(.head)
+                    } else {
+                        Text("No project folder")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.textTertiary)
+                            .lineLimit(1)
                     }
                 }
                 Spacer(minLength: 8)
@@ -296,11 +306,17 @@ private struct AgentOptionsSheet: View {
     /// working dir, so the folder can't be switched (only the branch can).
     private func folderReadOnlyRow(_ branch: SessionBranchConfig) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: "folder.fill")
+            Image(systemName: branch.folderPath == nil ? "bubble.left.and.bubble.right" : "folder.fill")
                 .font(.caption)
                 .foregroundStyle(Theme.textTertiary)
             VStack(alignment: .leading, spacing: 1) {
-                Text(branch.folderName ?? "—")
+                Group {
+                    if branch.folderPath != nil {
+                        Text(verbatim: branch.folderName ?? "—")
+                    } else {
+                        Text("Ordinary chat")
+                    }
+                }
                     .font(.callout.weight(.medium))
                     .foregroundStyle(Theme.textPrimary)
                     .lineLimit(1)
@@ -310,6 +326,11 @@ private struct AgentOptionsSheet: View {
                         .foregroundStyle(Theme.textTertiary)
                         .lineLimit(1)
                         .truncationMode(.head)
+                } else {
+                    Text("No project folder")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.textTertiary)
+                        .lineLimit(1)
                 }
             }
             Spacer(minLength: 8)

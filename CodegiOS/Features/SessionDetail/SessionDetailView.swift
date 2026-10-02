@@ -100,7 +100,7 @@ struct SessionDetailView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     AgentOptionsButton(
                         agentType: model.agentTypeForUI,
-                        workingDir: model.folder?.path,
+                        workingDir: model.projectFolder?.path,
                         isBusy: model.isInFlight,
                         options: model.agentOptions,
                         newSession: model.isDraftEditable ? NewSessionAgentConfig(
@@ -108,14 +108,14 @@ struct SessionDetailView: View {
                             selectedAgent: model.agentTypeForUI,
                             onSelectAgent: { model.selectAgent($0) },
                             availableFolders: model.availableFolders,
-                            selectedFolder: model.folder,
+                            selectedFolder: model.projectFolder,
                             onSelectFolder: { model.selectFolder($0) }
                         ) : nil,
                         branch: SessionBranchConfig(
                             // Root repo name when this session lives in a worktree.
-                            folderName: model.displayFolderName,
-                            folderPath: model.folder?.path,
-                            current: model.currentBranch,
+                            folderName: model.projectFolder == nil ? nil : model.displayFolderName,
+                            folderPath: model.projectFolder?.path,
+                            current: model.projectFolder == nil ? nil : model.currentBranch,
                             load: { await model.loadBranches() },
                             switchTo: { await model.switchBranch($0, isRemote: $1) },
                             create: { await model.createBranch($0, from: $1) },
@@ -162,7 +162,7 @@ struct SessionDetailView: View {
         }
         .sheet(isPresented: $showDetails) {
             if let summary = model.summary {
-                SessionDetailsSheet(summary: summary, stats: model.sessionStats, folder: model.folder)
+                SessionDetailsSheet(summary: summary, stats: model.sessionStats, folder: model.projectFolder)
             }
         }
         .task(id: scenePhase) {
@@ -258,7 +258,7 @@ struct SessionDetailView: View {
                 if model.summary == nil, model.isNewSession {
                     NewSessionHeaderCard(
                         agent: model.selectedAgent,
-                        folder: model.folder,
+                        folder: model.projectFolder,
                         isStarting: model.hasStartedFirstSend
                     )
                 }
@@ -400,19 +400,23 @@ private struct NewSessionHeaderCard: View {
                 if let agent {
                     AgentBadge(agent: agent)
                 }
-                if let folder {
-                    HStack(spacing: 4) {
-                        Image(systemName: "folder")
-                            .font(.system(size: 9, weight: .semibold))
-                        Text(folder.displayName)
-                            .font(.caption2.weight(.medium))
-                            .lineLimit(1)
+                HStack(spacing: 4) {
+                    Image(systemName: folder == nil ? "bubble.left.and.bubble.right" : "folder")
+                        .font(.system(size: 9, weight: .semibold))
+                    Group {
+                        if let folder {
+                            Text(verbatim: folder.displayName)
+                        } else {
+                            Text("Ordinary chat")
+                        }
                     }
-                    .foregroundStyle(Theme.textSecondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.primary.opacity(0.05), in: Capsule())
+                    .font(.caption2.weight(.medium))
+                    .lineLimit(1)
                 }
+                .foregroundStyle(Theme.textSecondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.primary.opacity(0.05), in: Capsule())
                 Spacer(minLength: 0)
                 (isStarting ? Text("Starting…") : Text("Tap the agent avatar above to set up"))
                     .font(.caption2)
@@ -515,8 +519,10 @@ private struct SessionDetailsSheet: View {
             Divider().overlay(Theme.hairline)
             if let folder {
                 DetailRow(label: "Folder", value: Text(verbatim: folder.displayName))
-                Divider().overlay(Theme.hairline)
+            } else {
+                DetailRow(label: "Workspace", value: Text("Ordinary chat"))
             }
+            Divider().overlay(Theme.hairline)
             DetailRow(label: "Messages", value: Text(verbatim: "\(summary.messageCount)"))
             Divider().overlay(Theme.hairline)
             DetailRow(label: "Created", value: Text(verbatim: summary.createdAt.formatted(date: .abbreviated, time: .shortened)))

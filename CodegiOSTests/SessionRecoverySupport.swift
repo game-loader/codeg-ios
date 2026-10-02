@@ -76,6 +76,10 @@ final class RecoveryServer: @unchecked Sendable {
     private var connectionSnapshot: Any = NSNull()
     private var snapshotGate: RecoveryResponseGate?
     private var feedbackResponses: [(status: Int, payload: [String: Any], gate: RecoveryResponseGate?)] = []
+    private var folderPayload: [[String: Any]]?
+    private var routeGates: [String: RecoveryResponseGate] = [:]
+    private var routeStatuses: [String: Int] = [:]
+    private var nextChatConversationID = 42
 
     init(agentType: AgentType = .claudeCode) {
         self.agentType = agentType
@@ -120,6 +124,15 @@ final class RecoveryServer: @unchecked Sendable {
     func setDetailPayload(_ payload: [String: Any]) {
         lock.lock(); defer { lock.unlock() }; detail = payload
     }
+    func setFolders(_ folders: [[String: Any]]) {
+        lock.lock(); defer { lock.unlock() }; folderPayload = folders
+    }
+    func holdNext(_ route: String, httpStatus: Int = 200) -> RecoveryResponseGate {
+        lock.lock(); defer { lock.unlock() }
+        let gate = RecoveryResponseGate()
+        routeGates[route] = gate; routeStatuses[route] = httpStatus
+        return gate
+    }
     func holdNextPrompt(httpStatus: Int = 200) -> RecoveryResponseGate {
         lock.lock(); defer { lock.unlock() }
         let gate = RecoveryResponseGate(); promptGate = gate; promptStatus = httpStatus; return gate
@@ -155,11 +168,20 @@ final class RecoveryServer: @unchecked Sendable {
             case "list_all_folder_details", "list_open_folder_details":
                 var folder = RecoveryFixtures.folder
                 folder["default_agent_type"] = agentType.rawValue
-                payload = [folder]
+                payload = folderPayload ?? [folder]
             case "acp_list_agents": payload = []
             case "acp_find_connection_for_conversation": payload = connection
             case "acp_connect": payload = "connection-42"
             case "create_conversation": payload = 42
+            case "create_chat_dir": payload = ["path": RecoveryFixtures.chatPath]
+            case "create_chat_conversation":
+                let id = nextChatConversationID; nextChatConversationID += 1
+                payload = ["conversationId": id, "folderId": 8, "folder": RecoveryFixtures.chatFolder]
+                var summary = detail["summary"] as! [String: Any]
+                summary["id"] = id; summary["folder_id"] = 8
+                summary["agent_type"] = body["agentType"]
+                detail["summary"] = summary
+            case "delete_conversation": break
             case "acp_prompt":
                 promptID = body["clientMessageId"] as? String
                 gate = promptGate; promptGate = nil; status = promptStatus; promptStatus = 200
@@ -178,6 +200,10 @@ final class RecoveryServer: @unchecked Sendable {
             case "acp_get_session_snapshot":
                 payload = connectionSnapshot; gate = snapshotGate; snapshotGate = nil
             default: unexpected.append(route); status = 500
+            }
+            if let held = routeGates.removeValue(forKey: route) {
+                gate = held
+                status = routeStatuses.removeValue(forKey: route) ?? status
             }
         }
         let data = try! JSONSerialization.data(withJSONObject: payload, options: [.fragmentsAllowed])
@@ -244,6 +270,11 @@ enum RecoveryFixtures {
         "last_opened_at": date, "sort_order": 0, "color": "blue",
         "default_agent_type": "claude_code"
     ]
+    static let chatPath = "/tmp/codeg-chat/fixture"
+    static let chatFolder: [String: Any] = [
+        "id": 8, "name": "Chat", "path": chatPath, "kind": "chat",
+        "last_opened_at": date, "sort_order": 0, "color": "blue"
+    ]
     static func detail(text: String, status: String = "pending_review", agentType: AgentType = .claudeCode) -> [String: Any] {
         ["summary": ["id": 42, "folder_id": 7, "title": "Recovery",
                      "agent_type": agentType.rawValue, "status": status,
@@ -299,7 +330,7 @@ final class RecoveryHarness {
     var nextSnapshot: LiveSessionSnapshot
     var nextDeliversSnapshot = true
     var model: SessionDetailViewModel!
-    init(newSession: Bool = false, agentType: AgentType = .claudeCode,
+    init(newSession: Bool = false, newRequest: NewSessionRequest? = nil, agentType: AgentType = .claudeCode,
          attachmentUploader: (any AttachmentUploadAPI)? = nil) throws {
         server = RecoveryServer(agentType: agentType)
         nextSnapshot = try RecoveryFixtures.snapshot()
@@ -314,9 +345,9 @@ final class RecoveryHarness {
             let stream = RecoveryEventStream(snapshot: self.nextSnapshot, deliversSnapshot: self.nextDeliversSnapshot)
             self.streams.append(stream); return stream
         }
-        if newSession {
+        if newSession || newRequest != nil {
             model = SessionDetailViewModel(client: client,
-                                          newSession: NewSessionRequest(preselectedFolderID: 7),
+                                          newSession: newRequest ?? NewSessionRequest(preselectedFolderID: 7),
                                           eventStreamFactory: factory, attachmentUploader: attachmentUploader)
         } else {
             model = SessionDetailViewModel(client: client, conversationID: 42, eventStreamFactory: factory,

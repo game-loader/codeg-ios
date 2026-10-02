@@ -7038,6 +7038,23 @@
         }
       }
     },
+    "No project folder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No project folder"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不绑定项目文件夹"
+          }
+        }
+      }
+    },
     "No selection" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7481,6 +7498,23 @@
         }
       }
     },
+    "Ordinary chat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ordinary chat"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "普通对话"
+          }
+        }
+      }
+    },
     "Output" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -7598,6 +7632,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "照片图库"
+          }
+        }
+      }
+    },
+    "Pick an agent first.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pick an agent first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先选择 Agent。"
           }
         }
       }

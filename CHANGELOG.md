@@ -12,6 +12,11 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Ordinary chats without selecting a project folder, matching desktop and web.
+  General new sessions default to ordinary chat; the agent options workspace
+  picker can switch between ordinary chat and a project before the first send.
+  Agent options reuse the chat's scratch directory, and failed first sends can
+  be retried without changing the conversation into a project session.
 - Common file attachments from the iOS Files picker, including Excel, Word,
   PDF, presentations, text/code, archives, audio and video. Files are copied
   and uploaded from disk with progress, cancellation, and explicit retry, then
