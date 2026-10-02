@@ -366,7 +366,7 @@ final class RecoveryHarness {
         config.timeoutIntervalForRequest = 3; config.timeoutIntervalForResource = 5
         session = URLSession(configuration: config)
         client = CodegClient(baseURL: URL(string: "https://\(host)")!, token: "test",
-                                 session: session, readSession: session)
+                                 session: session, readSession: session, probeSession: session)
         let factory: () -> any SessionEventStream = { [unowned self] in
             let stream = RecoveryEventStream(snapshot: self.nextSnapshot, deliversSnapshot: self.nextDeliversSnapshot)
             self.streams.append(stream); return stream

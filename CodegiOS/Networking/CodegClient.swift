@@ -8,13 +8,16 @@ struct CodegClient: Sendable {
     let token: String
     let session: URLSession
     private let readTransportSession: URLSession
+    private let probeTransportSession: URLSession
 
     init(baseURL: URL, token: String, session: URLSession = CodegClient.defaultSession,
-         readSession: URLSession = CodegClient.readSession) {
+         readSession: URLSession = CodegClient.readSession,
+         probeSession: URLSession = CodegClient.probeSession) {
         self.baseURL = baseURL
         self.token = token
         self.session = session
         self.readTransportSession = readSession
+        self.probeTransportSession = probeSession
     }
 
     static let defaultSession: URLSession = {
@@ -292,7 +295,7 @@ struct CodegClient: Sendable {
         try await postJSON(
             "acp_describe_agent_options",
             DescribeAgentOptionsBody(agentType: agentType, workingDir: workingDir),
-            session: Self.probeSession
+            session: probeTransportSession
         )
     }
 
