@@ -66,9 +66,12 @@ jobs:
             2>&1 | tee build/xcodebuild.log | xcbeautify
 
       - name: Test session foreground recovery on iPhone simulator
+        timeout-minutes: 12
         run: |
           set -euo pipefail
-          bash CodegiOSTests/run-session-recovery-tests.sh | xcbeautify
+          # Keep simulator boot and test-launch diagnostics visible. Formatting
+          # can buffer these lines when CoreSimulator fails to start testing.
+          bash CodegiOSTests/run-session-recovery-tests.sh
 
       - name: Save session recovery test results
         if: ${{ always() }}
@@ -81,6 +84,7 @@ jobs:
             build/SessionRecovery-*.xcresult
             build/session-recovery-simulators.json
             build/session-recovery-settings.json
+            build/session-recovery-boot.log
           retention-days: 7
           if-no-files-found: ignore
 

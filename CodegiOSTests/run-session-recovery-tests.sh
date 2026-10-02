@@ -50,8 +50,10 @@ xcodebuild build-for-testing \
   DEVELOPMENT_TEAM= CODEG_DEVELOPMENT_TEAM= \
   2>&1 | tee build/session-recovery-build.log
 
-xcrun simctl bootstatus "$SIMULATOR_ID" -b
-xcodebuild test-without-building \
+printf 'Simulator build completed; booting %s\n' "$SIMULATOR_ID"
+xcrun simctl bootstatus "$SIMULATOR_ID" -b 2>&1 | tee build/session-recovery-boot.log
+printf 'Simulator boot completed; starting CodegiOSTests\n'
+NSUnbufferedIO=YES xcodebuild test-without-building \
   -project CodegiOS.xcodeproj -scheme CodegiOSSessionRecovery -configuration Debug \
   -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
   -destination-timeout 120 \
