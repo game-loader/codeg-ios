@@ -116,7 +116,7 @@ final class MessageTextView: UITextView {
     }
 
     static func idealSize(for content: NSAttributedString) -> CGSize {
-        let bounds = content.boundingRect(with: CGSize(width: 10_000, height: .greatestFiniteMagnitude),
+        let bounds = content.boundingRect(with: CGSize(width: 10_000, height: CGFloat.greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
         return CGSize(width: max(1, ceil(bounds.width) + 1), height: max(1, ceil(bounds.height) + 1))
     }
