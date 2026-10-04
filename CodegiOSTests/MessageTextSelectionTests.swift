@@ -56,6 +56,21 @@ final class MessageTextSelectionTests: XCTestCase {
         XCTAssertEqual(MessageTextView.copyText(from: content, range: NSRange(location: 0, length: content.length)), source)
     }
 
+    func testCompatibilityFormulaIsDrawnAndCopiesOriginalCommands() throws {
+        let source = #"Before \(\boxed{\mathcal L = \operatorname{MSE}(G_S,G_{\mathrm{anchor}})}\) after"#
+        let content = rich(source)
+        let range = (content.string as NSString).range(of: "\u{FFFC}")
+        guard range.location != NSNotFound else {
+            return XCTFail("Compatibility formula must render as an attachment")
+        }
+
+        let formula = try XCTUnwrap(content.attribute(.attachment, at: range.location,
+                                                       effectiveRange: nil) as? MessageSourceAttachment)
+        XCTAssertNotNil(formula.image)
+        XCTAssertEqual(MessageTextView.copyText(from: content,
+                                                 range: NSRange(location: 0, length: content.length)), source)
+    }
+
     func testFormulaInsideEmphasisRetainsSurroundingStyleAndExactSource() {
         let content = rich(#"**Result \(x_i^2\)**"#)
         XCTAssertFalse(content.string.contains("x_i"))

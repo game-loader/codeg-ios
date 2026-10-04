@@ -12,6 +12,8 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- SwiftMath compatibility for `\boxed{}` and `\operatorname{}` formulas,
+  including native box borders while preserving the original LaTeX on copy.
 - Offline LaTeX equation rendering in messages, including inline and display
   formulas, fractions, matrices and math fences. Formula source remains available
   when copying a selection.
