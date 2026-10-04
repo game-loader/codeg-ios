@@ -39,7 +39,13 @@ struct SelectableMessageText: UIViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: MessageTextView, context: Context) -> CGSize? {
-        guard !scrolls, let width = proposal.width, width.isFinite, width > 0 else { return nil }
+        if scrolls {
+            guard let width = proposal.width, let height = proposal.height,
+                  width.isFinite, height.isFinite, width > 0, height > 0 else { return nil }
+            return CGSize(width: width, height: height)
+        }
+        guard let width = proposal.width else { return MessageTextView.idealSize(for: content) }
+        guard width.isFinite, width > 0 else { return nil }
         let size = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
         return CGSize(width: width, height: ceil(size.height))
     }
@@ -98,7 +104,9 @@ final class MessageTextView: UITextView {
         let selected = content.attributedSubstring(from: range)
         var result = ""
         selected.enumerateAttributes(in: NSRange(location: 0, length: selected.length)) { attributes, run, _ in
-            if let source = attributes[.attachment] as? MessageSourceAttachment {
+            if attributes[.messageDecoration] as? Bool == true {
+                return
+            } else if let source = attributes[.attachment] as? MessageSourceAttachment {
                 result += source.source
             } else {
                 result += (selected.string as NSString).substring(with: run)
@@ -106,6 +114,16 @@ final class MessageTextView: UITextView {
         }
         return result
     }
+
+    static func idealSize(for content: NSAttributedString) -> CGSize {
+        let bounds = content.boundingRect(with: CGSize(width: 10_000, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+        return CGSize(width: max(1, ceil(bounds.width) + 1), height: max(1, ceil(bounds.height) + 1))
+    }
+}
+
+extension NSAttributedString.Key {
+    static let messageDecoration = NSAttributedString.Key("codeg.messageDecoration")
 }
 
 /// Plain source/code keeps all bytes, including indentation, while still

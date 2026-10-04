@@ -20,7 +20,7 @@ struct SelectMessageTextButton: View {
     }
 }
 
-private struct MessageSelectionSheet: View {
+struct MessageSelectionSheet: View {
     let raw: String
     @Environment(\.dismiss) private var dismiss
     @Environment(\.sizeCategory) private var sizeCategory
@@ -33,6 +33,7 @@ private struct MessageSelectionSheet: View {
                 color: UIColor(Theme.textPrimary),
                 traits: UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light)),
                 scrolls: true)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(16)
                 .background(Theme.bg)
                 .navigationTitle("Select text")

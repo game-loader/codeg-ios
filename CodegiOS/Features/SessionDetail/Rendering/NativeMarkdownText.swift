@@ -60,6 +60,9 @@ enum NativeMarkdownText {
                         let image = NSMutableAttributedString(attachment: attachment)
                         image.addAttributes(attributes, range: NSRange(location: 0, length: image.length))
                         output.append(image)
+                        var separatorAttributes = attributes
+                        separatorAttributes[.messageDecoration] = true
+                        output.append(NSAttributedString(string: "\u{2060}", attributes: separatorAttributes))
                     }
                 } else {
                     attributes[.foregroundColor] = UIColor(Theme.accent).resolvedColor(with: traits)

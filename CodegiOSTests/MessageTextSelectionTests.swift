@@ -166,4 +166,35 @@ final class MessageTextSelectionTests: XCTestCase {
         let large = NativeMarkdownText.attributed("Theme", font: largeFont, color: .black, traits: traits)
         XCTAssertEqual((large.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)?.pointSize, largeFont.pointSize)
     }
+
+    func testWholeMessageSheetFillsViewportAndScrollsLongContent() async throws {
+        let raw = Array(repeating: "A paragraph for cross-paragraph selection.", count: 50).joined(separator: "\n\n")
+        let host = UIHostingController(rootView: MessageSelectionSheet(raw: raw))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 240, height: 480))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        await Task.yield()
+        host.view.layoutIfNeeded()
+        func find(_ view: UIView) -> MessageTextView? {
+            if let text = view as? MessageTextView { return text }
+            return view.subviews.lazy.compactMap(find).first
+        }
+        let text = try XCTUnwrap(find(host.view))
+        XCTAssertTrue(text.isSelectable)
+        XCTAssertTrue(text.isScrollEnabled)
+        XCTAssertFalse(text.isEditable)
+        XCTAssertGreaterThan(text.bounds.height, 200)
+        XCTAssertGreaterThan(text.contentSize.height, text.bounds.height)
+        XCTAssertEqual(MessageTextView.copyText(from: text.attributedText,
+            range: NSRange(location: 0, length: text.attributedText.length)), raw)
+    }
+
+    func testTableContentRetainsUsefulNaturalColumnWidth() {
+        let short = MessageTextView.idealSize(for: rich("ID"))
+        let wide = MessageTextView.idealSize(for: rich("A reasonably long table heading"))
+        XCTAssertGreaterThan(wide.width, 100)
+        XCTAssertGreaterThan(wide.width, short.width)
+        XCTAssertLessThan(short.height, font.lineHeight * 2)
+    }
 }
