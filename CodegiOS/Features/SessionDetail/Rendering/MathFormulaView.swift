@@ -8,6 +8,8 @@ public struct MathFormulaView: View {
     public let source: String
     public let color: Color
     public let display: Bool
+    @Environment(\.sizeCategory) private var sizeCategory
+    @Environment(\.colorScheme) private var colorScheme
 
     public init(latex: String, source: String, color: Color, display: Bool = true) {
         self.latex = latex
@@ -17,28 +19,32 @@ public struct MathFormulaView: View {
     }
 
     public var body: some View {
-        let fontSize = max(17, UIFont.preferredFont(forTextStyle: .body).pointSize)
+        let font = NativeMarkdownText.font(style: .body, category: sizeCategory)
+        let traits = UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light)
         if let image = MathFormulaRenderer.image(
             latex: latex,
-            fontSize: fontSize,
-            color: UIColor(color),
+            fontSize: font.pointSize,
+            color: UIColor(color).resolvedColor(with: traits),
             display: display
         ) {
             ScrollView(.horizontal, showsIndicators: false) {
-                Image(uiImage: image)
-                    .resizable()
-                    .interpolation(.high)
-                    .frame(width: image.size.width, height: image.size.height, alignment: .leading)
+                SelectableMessageText(content: attributed(image: image, font: font))
+                    .frame(width: ceil(image.size.width) + 1)
                     .accessibilityLabel(Text(verbatim: source.isEmpty ? latex : source))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            Text(verbatim: source.isEmpty ? latex : source)
-                .font(.body.monospaced())
-                .foregroundStyle(color)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+            SelectablePlainText(text: source.isEmpty ? latex : source, color: color)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func attributed(image: UIImage, font: UIFont) -> NSAttributedString {
+        let attachment = MessageSourceAttachment(image: image,
+            bounds: MathFormulaRenderer.attachmentBounds(for: image, display: true),
+            source: source.isEmpty ? latex : source)
+        let content = NSMutableAttributedString(attachment: attachment)
+        content.addAttribute(.font, value: font, range: NSRange(location: 0, length: content.length))
+        return content
     }
 }

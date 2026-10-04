@@ -72,6 +72,17 @@ final class MessageSourceAttachment: NSTextAttachment {
     }
 
     required init?(coder: NSCoder) { return nil }
+
+    override func attachmentBounds(for textContainer: NSTextContainer?, proposedLineFragment lineFrag: CGRect,
+                                   glyphPosition position: CGPoint, characterIndex charIndex: Int) -> CGRect {
+        // A long inline equation is an indivisible glyph. Fit it to the text
+        // column instead of letting TextKit clip it off the edge of an iPhone.
+        // Display equations in the transcript use a horizontal scroll surface.
+        let width = lineFrag.width - (textContainer?.lineFragmentPadding ?? 0) * 2
+        guard !source.isEmpty, width.isFinite, width > 0, bounds.width > width else { return bounds }
+        let scale = width / bounds.width
+        return CGRect(x: bounds.minX, y: bounds.minY * scale, width: width, height: bounds.height * scale)
+    }
 }
 
 final class MessageTextView: UITextView {
@@ -110,13 +121,7 @@ struct SelectablePlainText: View {
     var body: some View {
         let preferred = NativeMarkdownText.font(style: code ? .footnote : .body, category: sizeCategory)
         let font = code ? UIFont.monospacedSystemFont(ofSize: preferred.pointSize, weight: .regular) : preferred
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = code ? Theme.Typography.codeLineSpacing : Theme.Typography.messageLineSpacing
-        paragraph.lineBreakMode = code ? .byClipping : .byWordWrapping
-        let traits = UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light)
-        let content = NSAttributedString(string: text, attributes: [
-            .font: font, .foregroundColor: UIColor(color).resolvedColor(with: traits), .paragraphStyle: paragraph
-        ])
+        let content = attributed(font: font)
         if code {
             let bounds = content.boundingRect(with: CGSize(width: CGFloat.greatestFiniteMagnitude,
                                                           height: CGFloat.greatestFiniteMagnitude),
@@ -127,5 +132,15 @@ struct SelectablePlainText: View {
             SelectableMessageText(content: content)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func attributed(font: UIFont) -> NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = code ? Theme.Typography.codeLineSpacing : Theme.Typography.messageLineSpacing
+        paragraph.lineBreakMode = code ? .byClipping : .byWordWrapping
+        let traits = UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light)
+        return NSAttributedString(string: text, attributes: [
+            .font: font, .foregroundColor: UIColor(color).resolvedColor(with: traits), .paragraphStyle: paragraph
+        ])
     }
 }

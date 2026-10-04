@@ -68,6 +68,18 @@ final class MessageTextSelectionTests: XCTestCase {
         XCTAssertEqual(content.string, #"Cost $9.99 or $19.99; $HOME and \(x_i\)"#)
     }
 
+    func testLongInlineEquationFitsPhoneColumnAndStillCopiesWholeFormula() throws {
+        let source = #"\(a_1+a_2+a_3+a_4+a_5+a_6+a_7+a_8+a_9+a_{10}=b_1+b_2+b_3\)"#
+        let content = rich(source)
+        let attachment = try XCTUnwrap(content.attribute(.attachment, at: 0, effectiveRange: nil) as? MessageSourceAttachment)
+        let bounds = attachment.attachmentBounds(for: NSTextContainer(size: CGSize(width: 120, height: 400)),
+            proposedLineFragment: CGRect(x: 0, y: 0, width: 120, height: 400),
+            glyphPosition: .zero, characterIndex: 0)
+        XCTAssertLessThanOrEqual(bounds.width, 120)
+        XCTAssertGreaterThan(bounds.height, 0)
+        XCTAssertEqual(MessageTextView.copyText(from: content, range: NSRange(location: 0, length: content.length)), source)
+    }
+
     func testUnsupportedFormulaPreservesSourceWithoutDroppingText() {
         let source = #"Value \(\codegUnknownCommand{x}\) stays available."#
         let content = rich(source)

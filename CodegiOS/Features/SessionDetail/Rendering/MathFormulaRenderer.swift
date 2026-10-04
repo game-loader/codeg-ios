@@ -3,8 +3,14 @@ import UIKit
 import SwiftMath
 
 /// The single native rasterization boundary for Markdown math.
+@MainActor
 public enum MathFormulaRenderer {
-    private static let cache = NSCache<NSString, UIImage>()
+    private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 200
+        cache.totalCostLimit = 16 * 1024 * 1024
+        return cache
+    }()
     private static let maxLatexBytes = 16 * 1024
     private static let maxFontSize: CGFloat = 96
     private static let maxRasterWidth: CGFloat = 8_192
@@ -23,13 +29,6 @@ public enum MathFormulaRenderer {
               fontSize >= 6,
               fontSize <= maxFontSize else { return nil }
 
-        let lineCount = max(1, latex.split(separator: "\n", omittingEmptySubsequences: false).count)
-        let estimatedWidth = CGFloat(max(1, latex.utf8.count)) * fontSize * 2.75 + 32
-        let estimatedHeight = CGFloat(lineCount) * fontSize * 3.5 + 32
-        guard estimatedWidth <= maxRasterWidth,
-              estimatedHeight <= maxRasterHeight,
-              estimatedWidth * estimatedHeight <= maxRasterPixels else { return nil }
-
         let key = "\(display ? "display" : "text")|\(fontSize)|\(colorKey(color))|\(latex)" as NSString
         if let cached = cache.object(forKey: key) { return cached }
 
@@ -40,6 +39,18 @@ public enum MathFormulaRenderer {
             labelMode: display ? .display : .text,
             textAlignment: .left
         )
+        // Measure native layout before allocating a bitmap. TeX command length
+        // is not its visual width: even a long matrix can fit a small image.
+        let measure = MTMathUILabel()
+        measure.font = formatter.font
+        measure.labelMode = display ? .display : .text
+        measure.latex = latex
+        let size = measure.sizeThatFits(.zero)
+        let scale = UIGraphicsImageRendererFormat.default().scale
+        guard measure.error == nil, size.width.isFinite, size.height.isFinite,
+              size.width > 0, size.height > 0,
+              size.width <= maxRasterWidth, size.height <= maxRasterHeight,
+              size.width * size.height * scale * scale <= maxRasterPixels else { return nil }
         let (error, image) = formatter.asImage()
         guard error == nil, let image,
               image.size.width.isFinite,
@@ -50,7 +61,8 @@ public enum MathFormulaRenderer {
               image.size.height <= maxRasterHeight,
               image.size.width * image.size.height <= maxRasterPixels else { return nil }
 
-        cache.setObject(image, forKey: key)
+        let cost = image.cgImage.map { $0.bytesPerRow * $0.height } ?? Int(image.size.width * image.size.height * 4)
+        cache.setObject(image, forKey: key, cost: cost)
         return image
     }
 

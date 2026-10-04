@@ -32,7 +32,7 @@ public enum MarkdownMath {
         }
 
         while index < characters.count {
-            if characters[index] == "`" {
+            if characters[index] == "`", !isEscaped(in: characters, at: index) {
                 let run = countRun(of: "`", in: characters, from: index)
                 if let end = codeSpanEnd(in: characters, from: index + run, runLength: run) {
                     append(index, end)
@@ -129,10 +129,11 @@ public enum MarkdownMath {
         guard start <= characters.count else { return nil }
         var cursor = start
         while cursor + runLength <= characters.count {
-            if countRun(of: "`", in: characters, from: cursor) == runLength {
+            let candidateLength = countRun(of: "`", in: characters, from: cursor)
+            if candidateLength == runLength {
                 return cursor + runLength
             }
-            cursor += 1
+            cursor += max(1, candidateLength)
         }
         return nil
     }

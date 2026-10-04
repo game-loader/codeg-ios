@@ -407,11 +407,11 @@ enum MarkdownParser {
             return nil
         }()
         if let sameLine, trimmed.hasSuffix(sameLine.close), trimmed.count > sameLine.open.count + sameLine.close.count {
-            let start = trimmed.index(trimmed.startIndex, offsetBy: sameLine.open.count)
-            let end = trimmed.index(trimmed.endIndex, offsetBy: -sameLine.close.count)
-            let latex = String(trimmed[start..<end])
-            guard !latex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-            return DisplayFormula(latex: latex, source: trimmed, nextIndex: index + 1)
+            let masked = MarkdownMath.maskInline(trimmed)
+            guard masked.formulas.count == 1,
+                  let formula = masked.formulas.values.first, formula.source == trimmed,
+                  !formula.latex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return DisplayFormula(latex: formula.latex, source: trimmed, nextIndex: index + 1)
         }
 
         let close: String
