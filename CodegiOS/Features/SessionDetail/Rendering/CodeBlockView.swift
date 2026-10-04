@@ -70,11 +70,7 @@ struct CodeBlockView: View {
             header
             Rectangle().fill(Theme.hairline).frame(height: 0.5)
             ScrollView(.horizontal, showsIndicators: false) {
-                Text(verbatim: shown)
-                    .font(Theme.Typography.code)
-                    .lineSpacing(Theme.Typography.codeLineSpacing)
-                    .foregroundStyle(Theme.textPrimary)
-                    .textSelection(.enabled)
+                SelectablePlainText(text: shown, code: true)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
             }

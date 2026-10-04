@@ -12,6 +12,11 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Offline LaTeX equation rendering in messages, including inline and display
+  formulas, fractions, matrices and math fences. Formula source remains available
+  when copying a selection.
+- Native range selection for message paragraphs and code blocks on iPhone, plus
+  a Select text action for copying ranges across an entire message.
 - Ordinary chats without selecting a project folder, matching desktop and web.
   General new sessions default to ordinary chat; the agent options workspace
   picker can switch between ordinary chat and a project before the first send.

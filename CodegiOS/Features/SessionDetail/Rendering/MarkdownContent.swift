@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Block-level Markdown for assistant replies and user turns. `MarkdownParser`
 /// splits the source into paragraphs, headings, nested lists, quotes, fenced
@@ -75,7 +76,9 @@ private struct MarkdownBlockView: View {
                 style: .heading,
                 font: Theme.Typography.heading(level).weight(Theme.Typography.headingWeight(level)),
                 color: color,
-                lineSpacing: Theme.Typography.headingLineSpacing
+                lineSpacing: Theme.Typography.headingLineSpacing,
+                uiTextStyle: level == 1 ? .title2 : (level == 2 ? .title3 : (level == 3 ? .headline : .subheadline)),
+                uiWeight: level <= 2 ? .bold : .semibold
             )
             // A heading opens a section: more air above than between paragraphs.
             .padding(.top, isFirst ? 0 : Theme.Typography.headingTopSpacing(level))
@@ -99,6 +102,9 @@ private struct MarkdownBlockView: View {
 
         case .table(let table):
             MarkdownTableView(table: table)
+
+        case .math(let latex, let source):
+            MathFormulaView(latex: latex, source: source, color: color)
         }
     }
 }
@@ -192,7 +198,8 @@ private struct CaretParagraph: View {
         InlineMarkdownText(
             raw: raw,
             color: color,
-            caret: Text(verbatim: " ▌").foregroundStyle(visible ? Theme.accent : Theme.accent.opacity(0))
+            caret: Text(verbatim: " ▌").foregroundStyle(visible ? Theme.accent : Theme.accent.opacity(0)),
+            caretVisible: visible
         )
         .task {
             while !Task.isCancelled {
@@ -242,7 +249,9 @@ private struct MarkdownTableView: View {
             font: isHeader ? .subheadline.weight(.semibold) : .subheadline,
             color: isHeader ? Theme.textPrimary : Theme.textSecondary,
             lineSpacing: 2,
-            alignment: alignment
+            alignment: alignment,
+            uiTextStyle: .subheadline,
+            uiWeight: isHeader ? .semibold : nil
         )
         .padding(.horizontal, 10)
         .padding(.vertical, 7)

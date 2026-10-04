@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Inline Markdown (bold, italic, strikethrough, code spans, links) rendered to
 /// a single `Text`, the way codeg web shows it: a code span is a monospaced pill,
@@ -278,11 +279,46 @@ struct InlineMarkdownText: View {
     /// Appended to the text: the streaming "typing" caret (`CaretParagraph`).
     var caret: Text?
     var alignment: TextAlignment = .leading
+    var uiTextStyle: UIFont.TextStyle = .body
+    var uiWeight: UIFont.Weight? = nil
+    var caretVisible = true
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.sizeCategory) private var sizeCategory
 
     var body: some View {
-        let rendered = InlineMarkdown.render(raw, style: style, cached: caret == nil)
-        let text = caret.map { InlineMarkdown.concatenate([rendered.text, $0]) } ?? rendered.text
-        styled(text, hasCode: rendered.hasCode)
+        if let caret {
+            // Streaming remains lightweight SwiftUI text for ordinary prose;
+            // complete formulas switch to the native attributed renderer.
+            let masked = MarkdownMath.maskInline(raw)
+            if masked.formulas.isEmpty {
+                let rendered = InlineMarkdown.render(raw, style: style, cached: false)
+                styled(InlineMarkdown.concatenate([rendered.text, caret]), hasCode: rendered.hasCode)
+            } else {
+                nativeText(isSelectable: false)
+            }
+        } else {
+            nativeText(isSelectable: true)
+        }
+    }
+
+    private func nativeText(isSelectable: Bool) -> some View {
+        let traits = UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light)
+        let nativeFont = NativeMarkdownText.font(style: uiTextStyle, weight: uiWeight, category: sizeCategory)
+        let content = NSMutableAttributedString(attributedString: NativeMarkdownText.attributed(raw,
+            font: nativeFont,
+            color: UIColor(color), lineSpacing: lineSpacing,
+            alignment: alignment == .center ? .center : (alignment == .trailing ? .right : .left),
+            traits: traits, cached: caret == nil))
+        if caret != nil {
+            content.append(NSAttributedString(string: " ▌", attributes: [
+                .font: NativeMarkdownText.font(style: uiTextStyle, category: sizeCategory),
+                .foregroundColor: UIColor(Theme.accent).resolvedColor(with: traits).withAlphaComponent(caretVisible ? 1 : 0)
+            ]))
+        }
+        return SelectableMessageText(content: content, isSelectable: isSelectable)
+            .frame(maxWidth: .infinity, alignment: frameAlignment)
+            .alignmentGuide(.firstTextBaseline) { _ in nativeFont.ascender }
     }
 
     private var frameAlignment: Alignment {

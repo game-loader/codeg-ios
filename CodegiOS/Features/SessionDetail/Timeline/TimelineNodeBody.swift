@@ -93,6 +93,12 @@ private struct UserNodeBody: View {
             if !content.resources.isEmpty {
                 UserResourceChips(resources: content.resources)
             }
+            if !content.texts.isEmpty {
+                HStack {
+                    Spacer()
+                    SelectMessageTextButton(raw: content.texts.joined(separator: "\n\n"))
+                }
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
@@ -220,6 +226,7 @@ private struct TurnFooter: View {
         HStack(spacing: 10) {
             if !copyText.isEmpty {
                 CopyButton(text: copyText, label: "Copy")
+                SelectMessageTextButton(raw: copyText)
             }
             if let questionID {
                 JumpToQuestionButton(questionID: questionID)

@@ -11,6 +11,7 @@ enum MarkdownNode<Inline> {
     /// code), parsed recursively.
     case quote([MarkdownNode<Inline>])
     case code(language: String?, code: String)
+    case math(latex: String, source: String)
     case rule
     case table(MarkdownTable<Inline>)
 }
@@ -92,7 +93,18 @@ enum MarkdownParser {
                     body.append(fence.stripIndent(lines[i]))
                     i += 1
                 }
-                blocks.append(.code(language: fence.language, code: body.joined(separator: "\n")))
+                let code = body.joined(separator: "\n")
+                if fence.language?.lowercased() == "math" {
+                    blocks.append(.math(latex: code, source: code))
+                } else {
+                    blocks.append(.code(language: fence.language, code: code))
+                }
+                continue
+            }
+
+            if let formula = displayFormula(in: lines, from: i) {
+                blocks.append(.math(latex: formula.latex, source: formula.source))
+                i = formula.nextIndex
                 continue
             }
 
@@ -177,6 +189,7 @@ enum MarkdownParser {
             || isRule(trimmed) || quoteContent(line) != nil {
             return true
         }
+        if displayFormula(in: lines, from: i) != nil { return true }
         if i + 1 < lines.endIndex, line.contains("|"), tableAlignments(lines[i + 1]) != nil { return true }
         // CommonMark: an ordered list interrupts a paragraph only when it starts
         // at 1, so "…in 2019.\n2020 was…" stays prose.
@@ -373,6 +386,54 @@ enum MarkdownParser {
             }
             return String(line[index...])
         }
+    }
+
+    private struct DisplayFormula {
+        let latex: String
+        let source: String
+        let nextIndex: Int
+    }
+
+    /// Recognizes only isolated display delimiters. Keeping this ahead of table
+    /// and list classification prevents matrix rows from being interpreted as
+    /// Markdown structure, while an unclosed streamed formula stays literal.
+    private static func displayFormula(in lines: ArraySlice<String>, from index: Int) -> DisplayFormula? {
+        let line = lines[index]
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+        let sameLine: (open: String, close: String)? = {
+            if trimmed.hasPrefix("$$") { return ("$$", "$$") }
+            if trimmed.hasPrefix("\\[") { return ("\\[", "\\]") }
+            return nil
+        }()
+        if let sameLine, trimmed.hasSuffix(sameLine.close), trimmed.count > sameLine.open.count + sameLine.close.count {
+            let start = trimmed.index(trimmed.startIndex, offsetBy: sameLine.open.count)
+            let end = trimmed.index(trimmed.endIndex, offsetBy: -sameLine.close.count)
+            let latex = String(trimmed[start..<end])
+            guard !latex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return DisplayFormula(latex: latex, source: trimmed, nextIndex: index + 1)
+        }
+
+        let close: String
+        switch trimmed {
+        case "$$": close = "$$"
+        case "\\[": close = "\\]"
+        default: return nil
+        }
+
+        var body: [String] = []
+        var cursor = index + 1
+        while cursor < lines.endIndex {
+            if lines[cursor].trimmingCharacters(in: .whitespaces) == close {
+                let latex = body.joined(separator: "\n")
+                guard !latex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                let source = lines[index...cursor].joined(separator: "\n")
+                return DisplayFormula(latex: latex, source: source, nextIndex: cursor + 1)
+            }
+            body.append(lines[cursor])
+            cursor += 1
+        }
+        return nil
     }
 
     private static func atxHeading(_ trimmed: String) -> (Int, String)? {

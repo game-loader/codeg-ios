@@ -1,0 +1,131 @@
+import SwiftUI
+import UIKit
+
+/// Read-only UIKit text keeps the system selection handles and range-copy menu
+/// on iPhone. Disabling its own scrolling lets the transcript own vertical drag.
+struct SelectableMessageText: UIViewRepresentable {
+    let content: NSAttributedString
+    var isSelectable = true
+    var scrolls = false
+
+    @Environment(\.openURL) private var openURL
+
+    func makeUIView(context: Context) -> MessageTextView {
+        let view = MessageTextView()
+        view.backgroundColor = .clear
+        view.isEditable = false
+        view.textContainerInset = .zero
+        view.textContainer.lineFragmentPadding = 0
+        view.adjustsFontForContentSizeCategory = true
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.delegate = context.coordinator
+        view.linkTextAttributes = [:] // Keep per-reference colors and underline.
+        return view
+    }
+
+    func updateUIView(_ view: MessageTextView, context: Context) {
+        context.coordinator.openURL = { openURL($0) }
+        view.isSelectable = isSelectable
+        view.isScrollEnabled = scrolls
+        if !view.attributedText.isEqual(to: content) {
+            let selected = view.selectedRange
+            view.attributedText = content
+            if selected.location != NSNotFound, NSMaxRange(selected) <= content.length {
+                view.selectedRange = selected
+            }
+            view.invalidateIntrinsicContentSize()
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: MessageTextView, context: Context) -> CGSize? {
+        guard !scrolls, let width = proposal.width, width.isFinite, width > 0 else { return nil }
+        let size = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: width, height: ceil(size.height))
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var openURL: ((URL) -> Void)?
+
+        func textView(_ textView: UITextView, shouldInteractWith URL: URL,
+                      in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
+            // Preview/context actions retain the system selection behavior.
+            guard interaction == .invokeDefaultAction else { return true }
+            openURL?(URL)
+            return false
+        }
+    }
+}
+
+/// Attachments are drawn as formulas/reference icons, but range-copy keeps the
+/// formula's original TeX and omits decorative icons instead of copying U+FFFC.
+final class MessageSourceAttachment: NSTextAttachment {
+    let source: String
+
+    init(image: UIImage, bounds: CGRect, source: String) {
+        self.source = source
+        super.init(data: nil, ofType: nil)
+        self.image = image
+        self.bounds = bounds
+    }
+
+    required init?(coder: NSCoder) { return nil }
+}
+
+final class MessageTextView: UITextView {
+    override func copy(_ sender: Any?) {
+        guard selectedRange.location != NSNotFound, selectedRange.length > 0,
+              NSMaxRange(selectedRange) <= attributedText.length else { return }
+        UIPasteboard.general.string = Self.copyText(from: attributedText, range: selectedRange)
+    }
+
+    static func copyText(from content: NSAttributedString, range: NSRange) -> String {
+        guard range.location != NSNotFound, range.location >= 0,
+              range.length >= 0, NSMaxRange(range) <= content.length else { return "" }
+        let selected = content.attributedSubstring(from: range)
+        var result = ""
+        selected.enumerateAttributes(in: NSRange(location: 0, length: selected.length)) { attributes, run, _ in
+            if let source = attributes[.attachment] as? MessageSourceAttachment {
+                result += source.source
+            } else {
+                result += (selected.string as NSString).substring(with: run)
+            }
+        }
+        return result
+    }
+}
+
+/// Plain source/code keeps all bytes, including indentation, while still
+/// offering native range selection. Code panels opt out of line wrapping.
+struct SelectablePlainText: View {
+    let text: String
+    var color: Color = Theme.textPrimary
+    var code = false
+
+    @Environment(\.sizeCategory) private var sizeCategory
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let preferred = NativeMarkdownText.font(style: code ? .footnote : .body, category: sizeCategory)
+        let font = code ? UIFont.monospacedSystemFont(ofSize: preferred.pointSize, weight: .regular) : preferred
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = code ? Theme.Typography.codeLineSpacing : Theme.Typography.messageLineSpacing
+        paragraph.lineBreakMode = code ? .byClipping : .byWordWrapping
+        let traits = UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light)
+        let content = NSAttributedString(string: text, attributes: [
+            .font: font, .foregroundColor: UIColor(color).resolvedColor(with: traits), .paragraphStyle: paragraph
+        ])
+        if code {
+            let bounds = content.boundingRect(with: CGSize(width: CGFloat.greatestFiniteMagnitude,
+                                                          height: CGFloat.greatestFiniteMagnitude),
+                                              options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+            SelectableMessageText(content: content)
+                .frame(width: max(1, ceil(bounds.width) + 1), height: max(font.lineHeight, ceil(bounds.height) + 1))
+        } else {
+            SelectableMessageText(content: content)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
