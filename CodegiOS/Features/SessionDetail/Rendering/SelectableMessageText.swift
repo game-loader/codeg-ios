@@ -92,6 +92,14 @@ final class MessageSourceAttachment: NSTextAttachment {
 }
 
 final class MessageTextView: UITextView {
+    // Counts actual TextKit measurements, not SwiftUI layout proposals.
+    private(set) var layoutMeasurementCount = 0
+
+    override func sizeThatFits(_ size: CGSize) -> CGSize {
+        layoutMeasurementCount += 1
+        return super.sizeThatFits(size)
+    }
+
     override func copy(_ sender: Any?) {
         guard selectedRange.location != NSNotFound, selectedRange.length > 0,
               NSMaxRange(selectedRange) <= attributedText.length else { return }
