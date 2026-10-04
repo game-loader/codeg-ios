@@ -83,7 +83,8 @@ public enum MathFormulaRenderer {
     /// Returns the SwiftMath-compatible form while keeping the source string
     /// untouched in the Markdown and selection layers.
     internal static func normalizedLatex(for latex: String) -> (latex: String, boxed: Bool) {
-        normalize(latex)
+        let normalized = normalize(latex)
+        return (normalized.latex, normalized.boxed)
     }
 
     /// Bounds suitable for assigning to an `NSTextAttachment`. Text-style math
