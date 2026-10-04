@@ -23,7 +23,11 @@ candidates = [
 ]
 if not candidates:
     raise SystemExit('No available iPhone simulator with iOS >= 26; see build/session-recovery-simulators.json')
-print(sorted(candidates, reverse=True)[0][-1])
+# Prefer the oldest installed supported runtime. The newer 26.5 image can spend
+# several minutes in first-boot data migration and fail before testing starts;
+# 26.2 also verifies behavior closer to the app's iOS 26 deployment target.
+runtime = min(candidate[0] for candidate in candidates)
+print(sorted((c for c in candidates if c[0] == runtime), reverse=True)[0][-1])
 PY
 )"
 
