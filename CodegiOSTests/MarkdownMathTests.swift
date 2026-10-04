@@ -80,18 +80,18 @@ final class MarkdownMathTests: XCTestCase {
 
     func testSwiftMathCompatibilityCommandsRenderTheScreenshotFormulas() {
         let boxed = #"\boxed{\mathcal L = \lambda_D\mathcal L_{\mathrm{DINO}}+\lambda_I\mathcal L_{\mathrm{iBOT}}+\lambda_K\mathcal L_{\mathrm{KoLeo}}+\lambda_G\mathcal L_{\mathrm{Gram}}}"#
-        let operator = #"\mathcal L_{\mathrm{Gram}} = \operatorname{MSE}(G_S,G_{\mathrm{anchor}})"#
+        let operatorFormula = #"\mathcal L_{\mathrm{Gram}} = \operatorname{MSE}(G_S,G_{\mathrm{anchor}})"#
 
         let normalizedBoxed = MathFormulaRenderer.normalizedLatex(for: boxed)
         XCTAssertTrue(normalizedBoxed.boxed)
         XCTAssertFalse(normalizedBoxed.latex.contains(#"\boxed"#))
         XCTAssertTrue(normalizedBoxed.latex.contains(#"\mathcal L"#))
 
-        let normalizedOperator = MathFormulaRenderer.normalizedLatex(for: operator)
+        let normalizedOperator = MathFormulaRenderer.normalizedLatex(for: operatorFormula)
         XCTAssertEqual(normalizedOperator.latex, #"\mathcal L_{\mathrm{Gram}} = \mathrm{MSE}(G_S,G_{\mathrm{anchor}})"#)
 
         XCTAssertNotNil(MathFormulaRenderer.image(latex: boxed, fontSize: 20, color: .label, display: true))
-        XCTAssertNotNil(MathFormulaRenderer.image(latex: operator, fontSize: 20, color: .label, display: true))
+        XCTAssertNotNil(MathFormulaRenderer.image(latex: operatorFormula, fontSize: 20, color: .label, display: true))
     }
 
     func testRendererUsesTheSameLatexAndSizeAsSwiftMath() throws {
