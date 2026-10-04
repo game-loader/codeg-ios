@@ -305,16 +305,22 @@ struct InlineMarkdownText: View {
     private func nativeText(isSelectable: Bool) -> some View {
         let traits = UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light)
         let nativeFont = NativeMarkdownText.font(style: uiTextStyle, weight: uiWeight, category: sizeCategory)
-        let content = NSMutableAttributedString(attributedString: NativeMarkdownText.attributed(raw,
+        let base = NativeMarkdownText.attributed(raw,
             font: nativeFont,
             color: UIColor(color), lineSpacing: lineSpacing,
             alignment: alignment == .center ? .center : (alignment == .trailing ? .right : .left),
-            traits: traits, cached: caret == nil))
+            traits: traits, cached: caret == nil)
+        let content: NSAttributedString
         if caret != nil {
-            content.append(NSAttributedString(string: " ▌", attributes: [
+            let withCaret = NSMutableAttributedString(attributedString: base)
+            withCaret.append(NSAttributedString(string: " ▌", attributes: [
                 .font: NativeMarkdownText.font(style: uiTextStyle, category: sizeCategory),
                 .foregroundColor: UIColor(Theme.accent).resolvedColor(with: traits).withAlphaComponent(caretVisible ? 1 : 0)
             ]))
+            content = withCaret
+        } else {
+            // Settled paragraphs can reuse the immutable cached value directly.
+            content = base
         }
         return SelectableMessageText(content: content, isSelectable: isSelectable)
             .frame(maxWidth: .infinity, alignment: frameAlignment)

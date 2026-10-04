@@ -339,21 +339,7 @@ struct SessionDetailView: View {
                     .padding(.horizontal, Theme.Layout.screenHMargin)
                     .padding(.top, 8)
                 }
-                ComposeBar(
-                    text: $model.draft,
-                    isInFlight: model.isInFlight || model.isSubmittingPrompt,
-                    notice: model.notice,
-                    attachments: model.attachments,
-                    canAttachMore: model.canAttachMore,
-                    onAddAttachments: { model.addAttachments($0) },
-                    onRemoveAttachment: { model.removeAttachment($0) },
-                    onRetryAttachment: { model.retryAttachment($0) },
-                    onNotice: { model.notice = $0 },
-                    onSend: { model.send() },
-                    onStop: { model.cancel() },
-                    onDismissNotice: { model.notice = nil },
-                    insertModel: model.insertModel
-                )
+                SessionComposeBar(model: model)
             }
             .animation(.snappy(duration: 0.24), value: model.isPinnedToBottom)
             .animation(.snappy(duration: 0.26), value: model.pendingPermission?.id)

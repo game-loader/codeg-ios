@@ -26,8 +26,8 @@ struct SelectableMessageText: UIViewRepresentable {
 
     func updateUIView(_ view: MessageTextView, context: Context) {
         context.coordinator.openURL = { openURL($0) }
-        view.isSelectable = isSelectable
-        view.isScrollEnabled = scrolls
+        if view.isSelectable != isSelectable { view.isSelectable = isSelectable }
+        if view.isScrollEnabled != scrolls { view.isScrollEnabled = scrolls }
         if !view.attributedText.isEqual(to: content) {
             let selected = view.selectedRange
             view.attributedText = content
@@ -94,10 +94,69 @@ final class MessageSourceAttachment: NSTextAttachment {
 final class MessageTextView: UITextView {
     // Counts actual TextKit measurements, not SwiftUI layout proposals.
     private(set) var layoutMeasurementCount = 0
+    private var measuredSizes: [MeasurementKey: CGSize] = [:]
+    private var storageObserver: NSObjectProtocol?
+
+    override init(frame: CGRect = .zero, textContainer: NSTextContainer? = nil) {
+        super.init(frame: frame, textContainer: textContainer)
+        observeStorage()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        observeStorage()
+    }
+
+    deinit {
+        if let storageObserver { NotificationCenter.default.removeObserver(storageObserver) }
+    }
+
+    private func observeStorage() {
+        storageObserver = NotificationCenter.default.addObserver(
+            forName: NSTextStorage.didProcessEditingNotification, object: textStorage, queue: nil
+        ) { [weak self] _ in
+            // Includes same-length replacements and attribute/font changes,
+            // not just changes to the plain string's length.
+            self?.measuredSizes.removeAll(keepingCapacity: true)
+        }
+    }
 
     override func sizeThatFits(_ size: CGSize) -> CGSize {
+        let key = MeasurementKey(
+            width: size.width, height: size.height,
+            top: textContainerInset.top, left: textContainerInset.left,
+            bottom: textContainerInset.bottom, right: textContainerInset.right,
+            padding: textContainer.lineFragmentPadding,
+            maximumLines: textContainer.maximumNumberOfLines,
+            lineBreakMode: Int(textContainer.lineBreakMode.rawValue),
+            scrolls: isScrollEnabled, fontName: font?.fontName, fontSize: font?.pointSize
+        )
+        if let measured = measuredSizes[key] { return measured }
         layoutMeasurementCount += 1
-        return super.sizeThatFits(size)
+        let measured = super.sizeThatFits(size)
+        // SwiftUI asks for the same row size repeatedly as the composer/keyboard
+        // changes. Keep a small per-view cache, invalidated by TextKit edits.
+        if size.width.isFinite, size.height.isFinite,
+           measured.width.isFinite, measured.height.isFinite {
+            if measuredSizes.count >= 4 { measuredSizes.removeAll(keepingCapacity: true) }
+            measuredSizes[key] = measured
+        }
+        return measured
+    }
+
+    private struct MeasurementKey: Hashable {
+        let width: CGFloat
+        let height: CGFloat
+        let top: CGFloat
+        let left: CGFloat
+        let bottom: CGFloat
+        let right: CGFloat
+        let padding: CGFloat
+        let maximumLines: Int
+        let lineBreakMode: Int
+        let scrolls: Bool
+        let fontName: String?
+        let fontSize: CGFloat?
     }
 
     override func copy(_ sender: Any?) {

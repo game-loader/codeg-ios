@@ -10,6 +10,12 @@ the text as the git tag message and the GitHub Release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Typing in a conversation no longer observes the compose draft in the
+  transcript's parent view. Repeated read-only text layout reuses per-view
+  measurements, invalidated by text, font, inset and width changes.
+
 ### Added
 
 - SwiftMath compatibility for `\boxed{}` and `\operatorname{}` formulas,
