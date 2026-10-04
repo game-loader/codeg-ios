@@ -45,7 +45,9 @@ final class MessageTextSelectionTests: XCTestCase {
         let source = #"Before \(\frac{x_1}{\sqrt{y}}\) after"#
         let content = rich(source)
         let range = (content.string as NSString).range(of: "\u{FFFC}")
-        XCTAssertNotEqual(range.location, NSNotFound)
+        guard range.location != NSNotFound else {
+            return XCTFail("Formula must render as an attachment before testing range copy")
+        }
         let formula = try XCTUnwrap(content.attribute(.attachment, at: range.location,
                                                      effectiveRange: nil) as? MessageSourceAttachment)
         XCTAssertNotNil(formula.image)

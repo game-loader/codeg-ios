@@ -45,7 +45,10 @@ public enum MathFormulaRenderer {
         measure.font = formatter.font
         measure.labelMode = display ? .display : .text
         measure.latex = latex
-        let size = measure.sizeThatFits(.zero)
+        guard measure.error == nil else { return nil }
+        // SwiftMath 1.7.3 implements intrinsicContentSize; sizeThatFits is the
+        // UIView default and just returns the label's initial zero-sized frame.
+        let size = measure.intrinsicContentSize
         let scale = UIGraphicsImageRendererFormat.default().scale
         guard measure.error == nil, size.width.isFinite, size.height.isFinite,
               size.width > 0, size.height > 0,
