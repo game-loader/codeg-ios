@@ -49,14 +49,14 @@ struct ProjectDetailView: View {
     @ViewBuilder
     private var content: some View {
         if let folder {
-            // `.id(folder.id)` gives each folder a fresh `FolderDetailContent`
-            // (and thus a fresh `FolderGitModel`) when navigating between folders.
+            // Generation + folder identity prevents SwiftUI state from following
+            // an equal folder ID onto another host or a changed working directory.
             FolderDetailContent(
                 client: client,
                 folder: folder,
                 activity: activity
             )
-            .id(folder.id)
+            .id(ProjectWorkspaceKey(client: client, folder: folder))
         } else if !activity.hasLoaded {
             LoadingView(label: "Loading folder…")
         } else {
@@ -72,30 +72,31 @@ struct ProjectDetailView: View {
 // MARK: - Detail content (per resolved folder)
 
 /// The body of a resolved folder: identity header + Files/Changes/Commits tabs,
-/// owning the shared ``FolderGitModel`` and hosting the commit + credential
-/// sheets. Split out from ``ProjectDetailView`` so the git model can be created
-/// in `init` (the folder is known) and live for the screen's lifetime.
+/// hosting the retained project runtime and its commit + credential sheets.
+/// Bound clients resolve the same models after navigation/layout reconstruction;
+/// legacy unbound clients retain the original screen-local ownership.
 private struct FolderDetailContent: View {
     let client: CodegClient
     let folder: FolderDetail
     let activity: ActivityModel
 
-    @State private var tab: FolderTab = .files
-    @State private var git: FolderGitModel
-    @State private var terminal: TerminalSession
-    @State private var showCommit = false
+    @State private var runtime: ProjectRuntime?
 
     init(client: CodegClient, folder: FolderDetail, activity: ActivityModel) {
         self.client = client
         self.folder = folder
         self.activity = activity
-        _git = State(initialValue: FolderGitModel(client: client, rootPath: folder.path, folderId: folder.id))
-        _terminal = State(initialValue: TerminalSession(client: client, folder: folder))
+        _runtime = State(initialValue: ProjectWorkspaceCache.shared.runtime(client: client, folder: folder))
     }
 
     var body: some View {
-        @Bindable var git = git
-        VStack(spacing: 0) {
+        if let runtime { detail(runtime: runtime) }
+    }
+
+    private func detail(runtime: ProjectRuntime) -> some View {
+        @Bindable var runtime = runtime
+        @Bindable var git = runtime.git
+        return VStack(spacing: 0) {
             // Pinned identity + tab selector; the selected tab scrolls below.
             // The picker is always shown — the cached `gitBranch` is an
             // unreliable repo signal (it's `nil` for a freshly opened repo until
@@ -107,18 +108,18 @@ private struct FolderDetailContent: View {
                     sessionCount: activity.conversations(in: folder.id).count,
                     runningCount: activity.runningCount(folderID: folder.id)
                 )
-                tabPicker
+                tabPicker(runtime: runtime)
             }
             .padding(.horizontal, Theme.Layout.screenHMargin)
             .padding(.top, 10)
             .padding(.bottom, 12)
 
-            tabContent
+            tabContent(runtime: runtime)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // The commit composer; on dismiss, run the deferred push for "Commit &
         // Push" so its credential sheet doesn't stack on top of the composer.
-        .sheet(isPresented: $showCommit, onDismiss: {
+        .sheet(isPresented: $runtime.showCommit, onDismiss: {
             if git.pushAfterCommitDismiss {
                 git.pushAfterCommitDismiss = false
                 Task { await git.push() }
@@ -133,8 +134,9 @@ private struct FolderDetailContent: View {
         }
     }
 
-    private var tabPicker: some View {
-        Picker("View", selection: $tab) {
+    private func tabPicker(runtime: ProjectRuntime) -> some View {
+        @Bindable var runtime = runtime
+        return Picker("View", selection: $runtime.tab) {
             ForEach(FolderTab.allCases) { tab in
                 Text(tab.label).tag(tab)
             }
@@ -143,20 +145,20 @@ private struct FolderDetailContent: View {
     }
 
     @ViewBuilder
-    private var tabContent: some View {
-        switch tab {
+    private func tabContent(runtime: ProjectRuntime) -> some View {
+        switch runtime.tab {
         case .files:
             FolderFilesView(client: client, rootPath: folder.path, dirPath: folder.path, embedded: true)
                 .padding(.horizontal, Theme.Layout.screenHMargin)
         case .changes:
-            FolderChangesView(model: git, onCommit: { showCommit = true })
+            FolderChangesView(model: runtime.git, onCommit: { runtime.showCommit = true })
                 .padding(.horizontal, Theme.Layout.screenHMargin)
         case .commits:
-            FolderCommitsView(model: git)
+            FolderCommitsView(model: runtime.git)
                 .padding(.horizontal, Theme.Layout.screenHMargin)
         case .terminal:
             // Edge-to-edge: the terminal manages its own internal inset.
-            FolderTerminalView(session: terminal)
+            FolderTerminalView(session: runtime.terminal)
         }
     }
 }

@@ -152,6 +152,10 @@ struct TerminalSurface: UIViewRepresentable {
 
     func updateUIView(_ container: UIView, context: Context) {
         let term = session.view
+        term.isUserInteractionEnabled = context.environment.isEnabled
+        if !context.environment.isEnabled && term.isFirstResponder {
+            term.resignFirstResponder()
+        }
         if term.superview !== container {
             term.removeFromSuperview()
             term.translatesAutoresizingMaskIntoConstraints = false

@@ -27,6 +27,10 @@ codeg backend; the app only calls its HTTP + WebSocket API.
   e.g. `200M` for larger files). Keep the app open while uploading. Uploaded file
   references also stay attached to queued messages.
 
+## Multi-server worktrees
+
+Saved servers keep separate navigation, activity and chat drafts. The Folders tab groups repositories and worktrees by server; iPad can show two servers together. Full worktree inventory, creation with a base reference, registration-only recovery and guarded path removal require the updated Codeg Server. See [the iOS worktree guide](docs/multi-host-worktrees.md).
+
 ## Requirements
 
 - Xcode 26 / iOS 26 SDK

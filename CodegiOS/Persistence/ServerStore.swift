@@ -8,6 +8,7 @@ import Observation
 @Observable
 final class ServerStore {
     private(set) var servers: [ServerProfile]
+    @ObservationIgnored var onProfilesChanged: (() -> Void)?
 
     private let defaults: UserDefaults
     private let storageKey = "codeg.servers.v1"
@@ -15,6 +16,8 @@ final class ServerStore {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.servers = ServerStore.load(from: defaults, key: storageKey)
+        // Persist the opaque revisions generated while migrating older metadata.
+        persist()
     }
 
     // MARK: - Mutations
@@ -41,11 +44,18 @@ final class ServerStore {
     @discardableResult
     func update(_ profile: ServerProfile, token: String?) -> Bool {
         guard let index = servers.firstIndex(where: { $0.id == profile.id }) else { return false }
+        let previous = servers[index]
+        let tokenChanged = token.map { !$0.isEmpty && $0 != self.token(for: previous) } ?? false
         if let token, !token.isEmpty {
             // Store the new secret first; abort the whole update if it fails.
             guard Keychain.setToken(token, for: profile.id) else { return false }
         }
-        servers[index] = profile
+        var updated = profile
+        updated.configurationRevision = previous.configurationRevision
+        if previous.baseURL != profile.baseURL || tokenChanged {
+            updated.configurationRevision = UUID()
+        }
+        servers[index] = updated
         persist()
         return true
     }
@@ -86,6 +96,7 @@ final class ServerStore {
     private func persist() {
         guard let data = try? JSONEncoder().encode(servers) else { return }
         defaults.set(data, forKey: storageKey)
+        onProfilesChanged?()
     }
 
     private static func load(from defaults: UserDefaults, key: String) -> [ServerProfile] {

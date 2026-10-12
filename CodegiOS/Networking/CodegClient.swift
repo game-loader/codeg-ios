@@ -9,15 +9,29 @@ struct CodegClient: Sendable {
     let session: URLSession
     private let readTransportSession: URLSession
     private let probeTransportSession: URLSession
+    let bindingLifetime: ServerBindingLifetime?
 
     init(baseURL: URL, token: String, session: URLSession = CodegClient.defaultSession,
          readSession: URLSession = CodegClient.readSession,
-         probeSession: URLSession = CodegClient.probeSession) {
+         probeSession: URLSession = CodegClient.probeSession,
+         bindingLifetime: ServerBindingLifetime? = nil) {
         self.baseURL = baseURL
         self.token = token
         self.session = session
         self.readTransportSession = readSession
         self.probeTransportSession = probeSession
+        self.bindingLifetime = bindingLifetime
+    }
+
+    func bound(to lifetime: ServerBindingLifetime) -> CodegClient {
+        CodegClient(baseURL: baseURL, token: token, session: session,
+                    readSession: readTransportSession, probeSession: probeTransportSession,
+                    bindingLifetime: lifetime)
+    }
+
+    func checkBinding() throws {
+        try Task.checkCancellation()
+        try bindingLifetime?.check()
     }
 
     static let defaultSession: URLSession = {
@@ -389,6 +403,7 @@ struct CodegClient: Sendable {
     /// body — used for settings objects that must preserve snake_case keys the
     /// shared encoder/decoder would otherwise mangle (e.g. delegation settings).
     func send(_ path: String, rawBody: Data, session: URLSession? = nil) async throws -> Data {
+        try checkBinding()
         let session = session ?? self.session
         let url = baseURL.appendingPathComponent("api").appendingPathComponent(path)
         var request = URLRequest(url: url)
@@ -400,10 +415,14 @@ struct CodegClient: Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            (data, response) = try await ServerBoundHTTP.perform(request, session: session,
+                                                               lifetime: bindingLifetime)
         } catch {
+            try checkBinding()
             throw APIError.transport((error as? URLError)?.localizedDescription ?? error.localizedDescription)
         }
+
+        try checkBinding()
 
         guard let http = response as? HTTPURLResponse else {
             throw APIError.transport("Malformed response")

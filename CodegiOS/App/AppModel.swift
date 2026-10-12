@@ -9,6 +9,8 @@ import Observation
 @Observable
 final class AppModel {
     let serverStore: ServerStore
+    private let fixedClient: CodegClient?
+    private let fixedServer: Bool
 
     /// App-wide pulse of the selected server (running sessions, recents,
     /// folders) — the poll-based stand-in for the future persistent event hub.
@@ -22,7 +24,9 @@ final class AppModel {
         didSet {
             guard oldValue != selectedServerID else { return }
             resetServerScopedState()
-            UserDefaults.standard.set(selectedServerID?.uuidString, forKey: Self.lastServerKey)
+            if !fixedServer {
+                UserDefaults.standard.set(selectedServerID?.uuidString, forKey: Self.lastServerKey)
+            }
         }
     }
 
@@ -50,8 +54,8 @@ final class AppModel {
     /// pushable (e.g. `codeg://settings/<slug>`).
     var settingsPath: [SettingsLeaf] = []
 
-    /// Width class mirrored in by RootView so `open(_:)` can decide between a
-    /// push (compact) and a column selection (regular).
+    /// Active shell representation. RootView changes this through
+    /// `transitionShell(isCompact:)` so visible destinations move with it.
     var isCompact = false
 
     // MARK: - Presentation
@@ -59,14 +63,16 @@ final class AppModel {
     var serversSheetPresented = false
     var settingsSheetPresented = false
 
-    init(serverStore: ServerStore? = nil) {
+    init(serverStore: ServerStore? = nil, serverID: UUID? = nil, fixedClient: CodegClient? = nil) {
         let store = serverStore ?? ServerStore()
         self.serverStore = store
+        self.fixedClient = fixedClient
+        self.fixedServer = serverID != nil
         // Restore the last-used server, falling back to the first. With servers
         // demoted out of the tab bar there is no "pick a server" landing screen
         // anymore — the app must come up already pointed at a server.
         let persisted = UserDefaults.standard.string(forKey: Self.lastServerKey).flatMap(UUID.init)
-        self.selectedServerID = store.servers.first { $0.id == persisted }?.id ?? store.servers.first?.id
+        self.selectedServerID = serverID ?? store.servers.first { $0.id == persisted }?.id ?? store.servers.first?.id
     }
 
     var selectedServer: ServerProfile? {
@@ -76,11 +82,74 @@ final class AppModel {
 
     /// HTTP client for the selected server, if its token resolves.
     func selectedClient() -> CodegClient? {
+        if fixedServer { return fixedClient }
         guard let server = selectedServer else { return nil }
         return serverStore.client(for: server)
     }
 
     // MARK: - Routing
+
+    /// A split server pane uses the compact representation even at regular
+    /// device width. Move the visible destination before changing shells;
+    /// request tokens and retained session models remain owned by the workspace.
+    func transitionShell(isCompact compact: Bool) {
+        guard compact != isCompact else { return }
+        if compact {
+            if settingsSheetPresented {
+                selectedTab = .settings
+                settingsSheetPresented = false
+            } else {
+                switch sidebarSection {
+                case .projects, .machines, .academic: selectedTab = .projects
+                case .activity: selectedTab = .activity
+                case .chats, nil:
+                    if selectedTab != .search { selectedTab = .chats }
+                }
+                var path = contentPath
+                if sidebarSection == .machines { path.insert(.machines, at: 0) }
+                if sidebarSection == .academic { path.insert(.academic, at: 0) }
+                let detail: Route? = pendingNewSession.map(Route.newSession)
+                    ?? selectedConversationID.map(Route.conversation)
+                if let detail, path.last != detail { path.append(detail) }
+                paths[selectedTab] = path
+            }
+        } else if selectedTab == .settings {
+            settingsSheetPresented = true
+        } else {
+            let path = paths[selectedTab, default: []]
+            selectedConversationID = nil
+            pendingNewSession = nil
+            if let last = path.last {
+                switch last {
+                case .conversation(let id): selectedConversationID = id
+                case .newSession(let request): pendingNewSession = request
+                default: break
+                }
+            }
+            // Session screens occupy the regular detail column; the remaining
+            // folder/tool stack belongs to its content column.
+            contentPath = path.filter { route in
+                switch route {
+                case .conversation, .newSession: return false
+                default: return true
+                }
+            }
+            switch selectedTab {
+            case .projects:
+                if contentPath.first == .machines {
+                    sidebarSection = .machines
+                    contentPath.removeFirst()
+                } else if contentPath.first == .academic {
+                    sidebarSection = .academic
+                    contentPath.removeFirst()
+                } else { sidebarSection = .projects }
+            case .activity: sidebarSection = .activity
+            case .chats, .search: sidebarSection = .chats
+            case .settings: break
+            }
+        }
+        isCompact = compact
+    }
 
     /// Open a destination from any entry point. Compact pushes onto the current
     /// tab's stack; regular routes to the appropriate column.

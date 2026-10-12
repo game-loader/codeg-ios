@@ -33,6 +33,16 @@ jobs:
             -o "$RUNNER_TEMP/test-agent-mentions"
           "$RUNNER_TEMP/test-agent-mentions"
 
+      - name: Check server generation isolation and fixed HTTP routing
+        run: |
+          set -euo pipefail
+          swiftc CodegiOS/Networking/ServerBindingLifetime.swift CodegiOS/Persistence/ServerProfile.swift \
+            scripts/test-server-binding.swift -o "$RUNNER_TEMP/test-server-binding"
+          "$RUNNER_TEMP/test-server-binding"
+          swiftc CodegiOS/Networking/ServerBindingLifetime.swift CodegiOS/Networking/ServerBoundHTTP.swift \
+            scripts/test-server-http.swift -o "$RUNNER_TEMP/test-server-http"
+          "$RUNNER_TEMP/test-server-http"
+
       - name: Check PDF preview parsing and file lifecycle
         # PDFKit is also available on macOS, so the file/parser checks run
         # without an iOS simulator before compiling the device UI below.

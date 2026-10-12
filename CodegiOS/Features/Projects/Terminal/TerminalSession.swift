@@ -12,8 +12,8 @@ import SwiftTerm
 /// Lifecycle mirrors the web client (`terminal-view.tsx`): open the socket and
 /// await `__ready__` **before** `terminal_spawn` so no early output is dropped;
 /// kill the PTY on teardown (the server does not reap it when the socket closes).
-/// Created in `FolderDetailContent.init` via `State(initialValue:)` like
-/// `FolderGitModel`, so the `@MainActor` init has a MainActor context.
+/// Retained by `ProjectWorkspaceCache` for bound server generations; unbound
+/// clients keep the original screen-local lifetime.
 ///
 /// Teardown-critical handles (socket, write queue, tasks, terminal id) live in a
 /// `Sendable` ``TerminalRuntime`` box held as a `let`, so the non-isolated
@@ -49,6 +49,7 @@ final class TerminalSession {
     private var sentCols = 0      // latest size acknowledged to the PTY
     private var sentRows = 0
     private var appliedDark: Bool?
+    private var isRetired = false
 
     init(client: CodegClient, folder: FolderDetail) {
         self.client = client
@@ -72,7 +73,7 @@ final class TerminalSession {
 
     /// Idempotent lazy start — called from the tab's `.task`.
     func start() {
-        guard phase == .idle else { return }
+        guard !isRetired, client.bindingLifetime?.isValid != false, phase == .idle else { return }
         phase = .connecting
         let id = UUID().uuidString
         runtime.setId(id)
@@ -81,6 +82,7 @@ final class TerminalSession {
 
     /// Kill the current PTY and spawn a fresh one (the "Restart" action).
     func restart() {
+        guard !isRetired, client.bindingLifetime?.isValid != false else { return }
         resumeReadyIfPending()
         runtime.teardown(kill: true)
         view.feed(text: clearSequence)
@@ -90,6 +92,20 @@ final class TerminalSession {
         sentCols = 0
         sentRows = 0
         start()
+    }
+
+    /// Stop local terminal resources on permanent generation retirement, even
+    /// when a disappearing view or in-flight bootstrap still retains the model.
+    /// Keeps the existing best-effort teardown; a retired binding rejects its
+    /// network cleanup. Never bypasses binding checks or cancels remote agents.
+    func retire() {
+        guard !isRetired else { return }
+        isRetired = true
+        resumeReadyIfPending()
+        runtime.teardown(kill: true)
+        runtime.setId(nil)
+        phase = .exited
+        view.resignFirstResponder()
     }
 
     /// Clear the visible screen + scrollback locally (does not disturb the shell).
@@ -143,7 +159,9 @@ final class TerminalSession {
     }
 
     /// True while the runtime still owns `id` — i.e. no `restart()` has replaced it.
-    private func isCurrent(_ id: String) -> Bool { runtime.currentId() == id }
+    private func isCurrent(_ id: String) -> Bool {
+        !isRetired && client.bindingLifetime?.isValid != false && runtime.currentId() == id
+    }
 
     // MARK: - Socket + output
 
@@ -159,7 +177,8 @@ final class TerminalSession {
         // is alive — popping the folder detail would orphan the WebSocket + PTY.
         // Here `self` is only held for each frame's handling, then released before
         // the next `await`, so dropping the owning `@State` deinits the session
-        // promptly (deinit then closes the socket, ending this loop).
+        // promptly for unbound clients. Bound projects keep the session until
+        // generation retirement explicitly closes the socket and ends this loop.
         runtime.setConsumer(Task { [weak self] in
             for await frame in socket.frames {
                 guard let self else { break }
@@ -306,7 +325,7 @@ final class TerminalSession {
 
     deinit {
         // The server does not reap PTYs on socket close — kill explicitly so a
-        // closed folder detail leaves no orphan shell. `runtime` is a `Sendable`
+        // released session leaves no orphan shell. `runtime` is a `Sendable`
         // `let`, so the non-isolated deinit may touch it.
         runtime.teardown(kill: true)
     }

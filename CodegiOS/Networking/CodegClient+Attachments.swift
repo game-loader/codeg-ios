@@ -71,7 +71,7 @@ protocol AttachmentUploadAPI: Sendable {
 extension CodegClient: AttachmentUploadAPI {
     func uploadAttachment(file: StagedAttachmentFile, sessionID: String?,
                           progress: @escaping @Sendable (Double) -> Void) async throws -> UploadedAttachment {
-        try Task.checkCancellation()
+        try checkBinding()
         let payload = try AttachmentMultipartFile(file: file, sessionID: sessionID)
         defer {
             payload.remove()
@@ -99,8 +99,9 @@ extension CodegClient: AttachmentUploadAPI {
             // One attempt, with a disk-backed body. The async API cancels the
             // underlying task when its calling Swift task is cancelled.
             (data, response) = try await uploadSession.upload(for: request, fromFile: payload.url, delegate: delegate)
-            try Task.checkCancellation()
+            try checkBinding()
         } catch {
+            try checkBinding()
             if error is CancellationError || (error as? URLError)?.code == .cancelled || Task.isCancelled {
                 throw CancellationError()
             }

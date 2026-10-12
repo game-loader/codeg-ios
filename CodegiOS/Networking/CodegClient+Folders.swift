@@ -169,8 +169,8 @@ extension CodegClient {
     /// repo at `path`). Creates the worktree + branch only — register it as a
     /// folder afterward with ``openWorktreeFolder(path:sourceFolderId:)``.
     /// Response is `null`.
-    func gitWorktreeAdd(path: String, branchName: String, worktreePath: String) async throws {
-        _ = try await send("git_worktree_add", body: GitWorktreeAddBody(path: path, branchName: branchName, worktreePath: worktreePath))
+    func gitWorktreeAdd(path: String, branchName: String, worktreePath: String, base: String? = nil) async throws {
+        _ = try await send("git_worktree_add", body: GitWorktreeAddBody(path: path, branchName: branchName, worktreePath: worktreePath, base: base))
     }
 }
 
@@ -247,6 +247,7 @@ struct GitWorktreeAddBody: Encodable, Sendable {
     let path: String
     let branchName: String
     let worktreePath: String
+    var base: String? = nil
 }
 
 /// Body for `git_commit`. `folderId` (nil omitted) lets the server broadcast a

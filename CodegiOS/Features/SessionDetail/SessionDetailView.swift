@@ -21,6 +21,7 @@ struct SessionDetailView: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.serverWorkspaceVisible) private var workspaceVisible
     @State private var showRename = false
     @State private var renameText = ""
     @State private var showDetails = false
@@ -31,19 +32,21 @@ struct SessionDetailView: View {
     @State private var shownPaper: BoundPaper?
 
     init(server: ServerProfile, client: CodegClient, conversationID: Int,
-         onOpenSession: ((NewSessionRequest) -> Void)? = nil) {
+         onOpenSession: ((NewSessionRequest) -> Void)? = nil,
+         retainedModel: SessionDetailViewModel? = nil) {
         self.server = server
         self.client = client
         self.onOpenSession = onOpenSession
-        _model = State(initialValue: SessionDetailViewModel(client: client, conversationID: conversationID))
+        _model = State(initialValue: retainedModel ?? SessionDetailViewModel(client: client, conversationID: conversationID))
     }
 
     init(server: ServerProfile, client: CodegClient, newSession request: NewSessionRequest,
-         onOpenSession: ((NewSessionRequest) -> Void)? = nil) {
+         onOpenSession: ((NewSessionRequest) -> Void)? = nil,
+         retainedModel: SessionDetailViewModel? = nil) {
         self.server = server
         self.client = client
         self.onOpenSession = onOpenSession
-        _model = State(initialValue: SessionDetailViewModel(client: client, newSession: request))
+        _model = State(initialValue: retainedModel ?? SessionDetailViewModel(client: client, newSession: request))
     }
 
     /// Localized nav title: a real session title renders verbatim (user data,
@@ -60,7 +63,21 @@ struct SessionDetailView: View {
             content
         }
         .environment(\.openURL, OpenURLAction(handler: open(link:)))
+        .onChange(of: workspaceVisible) { _, visible in
+            if !visible {
+                showRename = false; showDetails = false; showDeleteConfirm = false
+                previewedFile = nil; shownPaper = nil
+            }
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
+            HStack(spacing: 6) {
+                Label(server.name, systemImage: "server.rack")
+                Text(server.displayHost).foregroundStyle(Theme.textSecondary)
+            }
+            .font(.caption)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Theme.Layout.screenHMargin)
+            .padding(.vertical, 5)
             if let paper = model.boundPaper {
                 PaperContextBar(paper: paper) { shownPaper = paper }
                     .padding(.vertical, 6)

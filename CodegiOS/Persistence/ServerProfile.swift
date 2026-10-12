@@ -7,12 +7,28 @@ struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
     var name: String
     var urlString: String
     var createdAt: Date
+    var configurationRevision: UUID
 
-    init(id: UUID = UUID(), name: String, urlString: String, createdAt: Date = Date()) {
+    init(id: UUID = UUID(), name: String, urlString: String, createdAt: Date = Date(),
+         configurationRevision: UUID = UUID()) {
         self.id = id
         self.name = name
         self.urlString = urlString
         self.createdAt = createdAt
+        self.configurationRevision = configurationRevision
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, urlString, createdAt, configurationRevision
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        urlString = try c.decode(String.self, forKey: .urlString)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        configurationRevision = try c.decodeIfPresent(UUID.self, forKey: .configurationRevision) ?? UUID()
     }
 
     /// Normalized, validated base URL (`http://host:3080`), or nil if it is not a

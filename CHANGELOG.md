@@ -4,7 +4,12 @@ All notable changes to Codeg for iOS are recorded here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Add changes under `## [Unreleased]` as you land them. When you cut a release,
+Add changes under `## [Unreleased]
+
+- Browse saved servers, repositories and registered worktrees in one native catalog, with retained per-server navigation and drafts and optional two-server iPad split views.
+- Manage complete Git worktree inventory, choose a creation base, retry registration separately, and remove checkouts with explicit branch/force confirmation and partial-removal recovery.
+- Fence retired endpoint generations and keep unsent text as read-only recovery records without replaying it to replacement servers.
+` as you land them. When you cut a release,
 `scripts/release.sh` moves that section under a new version heading and reuses
 the text as the git tag message and the GitHub Release notes.
 

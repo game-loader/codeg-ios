@@ -31,6 +31,7 @@ struct SessionListView: View {
         let servers: [ServerProfile]
         let selection: Binding<ServerProfile.ID?>
         let onManage: () -> Void
+        var onSingleServer: (() -> Void)? = nil
     }
 
     @State private var viewModel: SessionListViewModel
@@ -388,6 +389,9 @@ struct SessionListView: View {
             // trailing edge, which would clash with the leading checkmark column
             // above. Without an icon, the title lines up under the server names.
             Section {
+                if let onSingleServer = switcher.onSingleServer {
+                    Button("Single Server", action: onSingleServer)
+                }
                 Button("Manage Servers…", action: switcher.onManage)
             }
         } label: {

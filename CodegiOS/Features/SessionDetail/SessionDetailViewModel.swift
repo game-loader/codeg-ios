@@ -98,6 +98,41 @@ final class SessionDetailViewModel {
     private var pendingPlanFollowUp: String?
 
     private(set) var queuedMessages: [QueuedSessionMessage] = []
+
+    /// Read-only text captured before a binding is retired. Pending turns can
+    /// have reached the endpoint even when their acknowledgement is missing.
+    /// This snapshot is for copy/export only, never for automatic retry.
+    struct RetirementSnapshot {
+        let draft: String
+        let queuedTexts: [String]
+        let unconfirmedTexts: [String]
+
+        var recoveryText: String {
+            var pieces = [draft] + queuedTexts
+            if !unconfirmedTexts.isEmpty {
+                pieces.append(String(localized: "Delivery unconfirmed. Check the conversation before retrying."))
+                pieces.append(contentsOf: unconfirmedTexts)
+            }
+            return pieces.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                .joined(separator: "\n\n")
+        }
+    }
+
+    var retirementSnapshot: RetirementSnapshot {
+        // A queue item remains its own recovery owner while being submitted.
+        // Once accepted and removed from the queue, its pending turn owns text.
+        let queuedTurnIDs = Set(queuedMessages.map { "queued-\($0.id)" })
+        let pendingTexts = pendingUserTurns.filter { !queuedTurnIDs.contains($0.id) }.compactMap { turn -> String? in
+            let text = turn.blocks.compactMap { block -> String? in
+                if case .text(let text) = block { return text }
+                return nil
+            }.joined(separator: "\n")
+            return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
+        }
+        return RetirementSnapshot(draft: draft, queuedTexts: queuedMessages.map(\.text),
+                                  unconfirmedTexts: pendingTexts)
+    }
+
     private(set) var feedbackNotes: [SessionFeedback] = []
     private(set) var usesToolBoundaryDelivery = false
     private var consumedFeedback: Set<String> = []

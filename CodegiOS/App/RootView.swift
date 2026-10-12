@@ -12,68 +12,122 @@ import SwiftUI
 ///
 /// First launch with no saved servers shows the onboarding screen instead.
 struct RootView: View {
-    @State private var model = AppModel()
+    @State private var registry = ServerWorkspaceRegistry()
     @State private var appearance = AppearanceStore()
     @State private var language = LanguageStore()
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    var body: some View {
+        Group {
+            if registry.store.servers.isEmpty {
+                OnboardingView(store: registry.store) { profile in
+                    registry.reconcile()
+                    registry.selectedServerID = profile.id
+                }
+            } else {
+                GeometryReader { geometry in
+                    let split = horizontalSizeClass != .compact && registry.secondaryServerID != nil
+                    let width = split ? geometry.size.width / 2 : geometry.size.width
+                    ZStack(alignment: .leading) {
+                        ForEach(registry.workspaces) { workspace in
+                            let primary = workspace.server.id == registry.selectedServerID
+                            let secondary = split && workspace.server.id == registry.secondaryServerID
+                            ServerWorkspaceView(workspace: workspace, registry: registry, splitPane: split,
+                                                isVisible: primary || secondary)
+                                .frame(width: width, height: geometry.size.height)
+                                .offset(x: secondary ? width : 0)
+                                .opacity(primary || secondary ? 1 : 0)
+                                .allowsHitTesting(primary || secondary)
+                                .accessibilityHidden(!primary && !secondary)
+                                .zIndex(primary || secondary ? 1 : 0)
+                        }
+                    }
+                }
+            }
+        }
+        .tint(Theme.accent)
+        .environment(\.codegAccent, appearance.accent)
+        .environment(appearance)
+        .environment(language)
+        .environment(\.locale, language.locale)
+        .preferredColorScheme(appearance.mode.colorScheme)
+        .onChange(of: registry.store.servers) { _, _ in registry.reconcile() }
+        .onOpenURL { registry.handle(url: $0, compact: horizontalSizeClass == .compact) }
+        .sheet(isPresented: $registry.manageServersPresented, onDismiss: { registry.reconcile() }) {
+            ManageServersSheet(store: registry.store, selectedServerID: $registry.selectedServerID)
+        }
+        .sheet(isPresented: $registry.recoveryPresented) {
+            ServerDraftRecoveryView(registry: registry)
+        }
+    }
+}
+
+/// Retained at a stable sibling position while selection/geometry changes.
+/// All destinations below this shell use its initiating server's fixed client.
+private struct ServerWorkspaceView: View {
+    let workspace: ServerWorkspace
+    @Bindable var registry: ServerWorkspaceRegistry
+    var splitPane: Bool
+    var isVisible: Bool
+    @Bindable var model: AppModel
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
 
+    init(workspace: ServerWorkspace, registry: ServerWorkspaceRegistry, splitPane: Bool, isVisible: Bool) {
+        self.workspace = workspace
+        self.registry = registry
+        self.splitPane = splitPane
+        self.isVisible = isVisible
+        self.model = workspace.model
+    }
+
     var body: some View {
         Group {
-            if model.serverStore.servers.isEmpty {
-                OnboardingView(store: model.serverStore) { profile in
-                    model.selectedServerID = profile.id
-                }
-            } else if horizontalSizeClass == .compact {
+            if horizontalSizeClass == .compact || splitPane {
                 compactShell
             } else {
                 splitShell
             }
         }
-        .tint(Theme.accent)
-        // Theme: the accent palette flows through a bridged UIKit trait so every
-        // `Theme.accent` recolors live; mode drives light/dark/system. The store
-        // is also placed in the environment so the Settings screen can edit it.
-        // Applied on the outermost Group so sheets and the activity `.task`
-        // inherit it. No `.id(...)` — accent/mode changes must not tear down
-        // live SessionDetail streams.
-        .environment(\.codegAccent, appearance.accent)
-        .environment(appearance)
-        // App display language: overriding `\.locale` re-resolves every
-        // `LocalizedStringKey` live (no `.id(...)` teardown, so live streams
-        // survive). `.system` hands back the device locale (a no-op override).
-        .environment(language)
-        .environment(\.locale, language.locale)
-        .preferredColorScheme(appearance.mode.colorScheme)
-        .onOpenURL { model.handle(url: $0) }
+        .environment(\.serverWorkspaceVisible, isVisible)
+        .disabled(!isVisible)
+        .onChange(of: isVisible) { _, visible in
+            if !visible { model.settingsSheetPresented = false }
+        }
         .onChange(of: horizontalSizeClass, initial: true) { _, size in
-            model.isCompact = size == .compact
+            model.transitionShell(isCompact: size == .compact || splitPane)
         }
-        // If the selected server is edited in place (same UUID, new endpoint),
-        // its conversation/folder IDs may no longer be valid — drop them.
-        // (Switching servers is handled by AppModel.selectedServerID.didSet.)
-        .onChange(of: model.selectedServer) { old, new in
-            model.selectedServerChanged(from: old, to: new)
+        .onChange(of: splitPane) { _, _ in
+            model.transitionShell(isCompact: horizontalSizeClass == .compact || splitPane)
         }
-        // App-wide activity pulse: feeds the Activity tab, its sidebar badge,
-        // and the bottom running bar. Restarts when the scene activates or the
-        // server identity/endpoint changes; pauses in the background.
+        .onChange(of: model.paths) { _, _ in registry.saveNavigation(workspace) }
+        .onChange(of: model.contentPath) { _, _ in registry.saveNavigation(workspace) }
+        .onChange(of: model.selectedConversationID) { _, _ in registry.saveNavigation(workspace) }
+        .onChange(of: model.selectedTab) { _, _ in registry.saveNavigation(workspace) }
         .task(id: activityPulseID) {
-            guard scenePhase == .active else { return }
-            await model.activity.autoRefresh(client: model.selectedClient())
-        }
-        .sheet(isPresented: $model.serversSheetPresented) {
-            ManageServersSheet(store: model.serverStore, selectedServerID: $model.selectedServerID)
+            guard scenePhase == .active, !workspace.isRetired else { return }
+            await workspace.activity.autoRefresh(client: workspace.client)
         }
     }
 
     /// Identity for the activity poller's `.task` — composes everything that
     /// should restart the loop.
     private var activityPulseID: String {
-        let server = model.selectedServerID?.uuidString ?? "none"
-        let endpoint = model.selectedServer?.urlString ?? ""
+        let server = workspace.id.uuidString
+        let endpoint = workspace.server.urlString
         return "\(String(describing: scenePhase))|\(server)|\(endpoint)"
+    }
+
+    private var serverSelection: Binding<UUID?> {
+        Binding(get: { workspace.server.id }, set: { target in
+            if splitPane && registry.secondaryServerID == workspace.server.id {
+                guard target != registry.selectedServerID else { return }
+                registry.secondaryServerID = target
+            } else {
+                registry.selectedServerID = target
+            }
+        })
     }
 
     // MARK: - Compact width: bottom tab shell
@@ -157,7 +211,7 @@ struct RootView: View {
     @ViewBuilder
     private var chatsRoot: some View {
         Group {
-            if let server = model.selectedServer, let client = model.serverStore.client(for: server) {
+            if let server = model.selectedServer, let client = workspace.client {
                 SessionListView(
                     server: server,
                     client: client,
@@ -169,8 +223,9 @@ struct RootView: View {
                     // toolbarTitleMenu on this Group anymore.
                     serverSwitcher: .init(
                         servers: model.serverStore.servers,
-                        selection: $model.selectedServerID,
-                        onManage: { model.serversSheetPresented = true }
+                        selection: serverSelection,
+                        onManage: { registry.manageServersPresented = true },
+                        onSingleServer: registry.secondaryServerID == nil ? nil : { registry.showSingleServer() }
                     )
                 )
                 .id(server.id)
@@ -180,7 +235,7 @@ struct RootView: View {
                     title: "Server Unavailable",
                     message: "This server's token is missing. Edit the server to re-enter it.",
                     actionTitle: "Manage Servers",
-                    action: { model.serversSheetPresented = true }
+                    action: { registry.manageServersPresented = true }
                 )
                 .navigationTitle(model.selectedServer?.name ?? "Codeg")
                 .toolbarTitleDisplayMode(.inlineLarge)
@@ -194,7 +249,7 @@ struct RootView: View {
                     title: "No Server Selected",
                     message: "Choose a server, or add a new one.",
                     actionTitle: "Manage Servers",
-                    action: { model.serversSheetPresented = true }
+                    action: { registry.manageServersPresented = true }
                 )
                 .navigationTitle("Codeg")
             }
@@ -203,12 +258,8 @@ struct RootView: View {
 
     private var projectsTab: some View {
         NavigationStack(path: navPath(.projects)) {
-            ProjectListView(
-                activity: model.activity,
-                client: model.selectedClient(),
-                onOpenProject: { model.open(.project($0)) },
-                onOpenTool: { model.open($0.route) }
-            )
+            MultiServerProjectListView(registry: registry, workspace: workspace,
+                                       onOpenTool: { model.open($0.route) })
             .id(model.selectedServerID)
             .navigationDestination(for: Route.self) { route in
                 routeDestination(route)
@@ -234,7 +285,7 @@ struct RootView: View {
         // stacks): `SettingsView` registers the `.navigationDestination(for:)`,
         // so value-based rows and `codeg://settings/<slug>` both push here.
         NavigationStack(path: $model.settingsPath) {
-            SettingsView(store: model.serverStore, selectedServerID: $model.selectedServerID)
+            SettingsView(store: model.serverStore, selectedServerID: serverSelection)
         }
     }
 
@@ -255,7 +306,7 @@ struct RootView: View {
 
     private var splitShell: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            SplitSidebar(model: model)
+            SplitSidebar(model: model, registry: registry)
         } content: {
             NavigationStack(path: $model.contentPath) {
                 contentRoot
@@ -271,7 +322,7 @@ struct RootView: View {
         .sheet(isPresented: $model.settingsSheetPresented) {
             SettingsSheet(
                 store: model.serverStore,
-                selectedServerID: $model.selectedServerID,
+                selectedServerID: serverSelection,
                 path: $model.settingsPath
             )
         }
@@ -281,11 +332,12 @@ struct RootView: View {
     private var contentRoot: some View {
         switch model.sidebarSection {
         case .chats:
-            if let server = model.selectedServer, let client = model.serverStore.client(for: server) {
+            if let server = model.selectedServer, let client = workspace.client {
                 SessionListView(
                     server: server,
                     client: client,
                     selectedConversationID: $model.selectedConversationID,
+                    onOpen: { model.open(.conversation($0)) },
                     onNewSession: { model.open(.newSession(NewSessionRequest())) }
                 )
                 .id(server.id)
@@ -297,11 +349,7 @@ struct RootView: View {
                 )
             }
         case .projects:
-            ProjectListView(
-                activity: model.activity,
-                client: model.selectedClient(),
-                onOpenProject: { model.open(.project($0)) }
-            )
+            MultiServerProjectListView(registry: registry, workspace: workspace)
             .id(model.selectedServerID)
         case .activity:
             ActivityView(
@@ -327,16 +375,18 @@ struct RootView: View {
     @ViewBuilder
     private var detailColumn: some View {
         if let server = model.selectedServer,
-           let client = model.serverStore.client(for: server),
+           let client = workspace.client,
            let pending = model.pendingNewSession {
             SessionDetailView(server: server, client: client, newSession: pending,
-                              onOpenSession: { model.open(.newSession($0)) })
+                              onOpenSession: { model.open(.newSession($0)) },
+                              retainedModel: workspace.session(request: pending))
                 .id(pending.id)
         } else if let server = model.selectedServer,
-                  let client = model.serverStore.client(for: server),
+                  let client = workspace.client,
                   let conversationID = model.selectedConversationID {
             SessionDetailView(server: server, client: client, conversationID: conversationID,
-                              onOpenSession: { model.open(.newSession($0)) })
+                              onOpenSession: { model.open(.newSession($0)) },
+                              retainedModel: workspace.session(conversationID: conversationID))
                 // Recreate the stateful detail model when the conversation, the
                 // server, or its token changes — so it never streams against a
                 // stale CodegClient after an in-place server edit / token rotation.
@@ -358,16 +408,18 @@ struct RootView: View {
     /// harmless no-op outside a `TabView`.
     @ViewBuilder
     private func routeDestination(_ route: Route) -> some View {
-        if let server = model.selectedServer, let client = model.serverStore.client(for: server) {
+        if let server = model.selectedServer, let client = workspace.client {
             switch route {
             case .conversation(let id):
                 SessionDetailView(server: server, client: client, conversationID: id,
-                                  onOpenSession: { model.open(.newSession($0)) })
+                                  onOpenSession: { model.open(.newSession($0)) },
+                                  retainedModel: workspace.session(conversationID: id))
                     .id("\(server.id)|\(id)|\(client.token.hashValue)")
                     .toolbar(.hidden, for: .tabBar)
             case .newSession(let request):
                 SessionDetailView(server: server, client: client, newSession: request,
-                                  onOpenSession: { model.open(.newSession($0)) })
+                                  onOpenSession: { model.open(.newSession($0)) },
+                                  retainedModel: workspace.session(request: request))
                     .id(request.id)
                     .toolbar(.hidden, for: .tabBar)
             case .project(let id):
@@ -406,7 +458,7 @@ struct RootView: View {
     /// among saved servers (checkmark via Picker) or open management.
     @ViewBuilder
     private var serverSwitcherMenu: some View {
-        Picker("Server", selection: $model.selectedServerID) {
+        Picker("Server", selection: serverSelection) {
             ForEach(model.serverStore.servers) { server in
                 Text(server.name).tag(Optional(server.id))
             }
@@ -415,7 +467,18 @@ struct RootView: View {
         // Plain text (no icon): menu button icons render on the trailing edge,
         // which would sit opposite the picker's leading checkmarks.
         Button("Manage Servers…") {
-            model.serversSheetPresented = true
+            registry.manageServersPresented = true
+        }
+        if horizontalSizeClass != .compact {
+            Menu("Split Servers") {
+                Button("Single Server") { registry.showSingleServer() }
+                ForEach(registry.workspaces.filter { $0.server.id != registry.selectedServerID }) { other in
+                    Button(other.server.name) { registry.secondaryServerID = other.server.id }
+                }
+            }
+        }
+        if !registry.recoveredDrafts.isEmpty {
+            Button("Recovered Drafts") { registry.recoveryPresented = true }
         }
     }
 }
@@ -427,6 +490,7 @@ struct RootView: View {
 /// unreachable on iPad.)
 private struct SplitSidebar: View {
     @Bindable var model: AppModel
+    @Bindable var registry: ServerWorkspaceRegistry
 
     var body: some View {
         List(selection: $model.sidebarSection) {
@@ -447,14 +511,23 @@ private struct SplitSidebar: View {
         .navigationTitle(model.selectedServer?.name ?? "Codeg")
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
         .toolbarTitleMenu {
-            Picker("Server", selection: $model.selectedServerID) {
+            Picker("Server", selection: $registry.selectedServerID) {
                 ForEach(model.serverStore.servers) { server in
                     Text(server.name).tag(Optional(server.id))
                 }
             }
             Divider()
             Button("Manage Servers…") {
-                model.serversSheetPresented = true
+                registry.manageServersPresented = true
+            }
+            Menu("Split Servers") {
+                Button("Single Server") { registry.showSingleServer() }
+                ForEach(registry.workspaces.filter { $0.server.id != registry.selectedServerID }) { other in
+                    Button(other.server.name) { registry.secondaryServerID = other.server.id }
+                }
+            }
+            if !registry.recoveredDrafts.isEmpty {
+                Button("Recovered Drafts") { registry.recoveryPresented = true }
             }
         }
         .toolbar {
