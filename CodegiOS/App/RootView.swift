@@ -83,6 +83,13 @@ private struct ServerWorkspaceView: View {
     }
 
     var body: some View {
+        observedShell
+            .environment(\.serverWorkspaceVisible, isVisible)
+            .disabled(!isVisible)
+            .task(id: activityPulseID) { await refreshActivity() }
+    }
+
+    @ViewBuilder private var shell: some View {
         Group {
             if horizontalSizeClass == .compact || splitPane {
                 compactShell
@@ -90,8 +97,10 @@ private struct ServerWorkspaceView: View {
                 splitShell
             }
         }
-        .environment(\.serverWorkspaceVisible, isVisible)
-        .disabled(!isVisible)
+    }
+
+    private var observedShell: some View {
+        shell
         .onChange(of: isVisible) { _, visible in
             if !visible { model.settingsSheetPresented = false }
         }
@@ -105,10 +114,13 @@ private struct ServerWorkspaceView: View {
         .onChange(of: model.contentPath) { _, _ in registry.saveNavigation(workspace) }
         .onChange(of: model.selectedConversationID) { _, _ in registry.saveNavigation(workspace) }
         .onChange(of: model.selectedTab) { _, _ in registry.saveNavigation(workspace) }
-        .task(id: activityPulseID) {
-            guard scenePhase == .active, !workspace.isRetired else { return }
-            await workspace.activity.autoRefresh(client: workspace.client)
-        }
+    }
+
+    private func refreshActivity() async {
+        guard scenePhase == .active, !workspace.isRetired else { return }
+        let activity: ActivityModel = workspace.activity
+        let client: CodegClient? = workspace.client
+        await activity.autoRefresh(client: client, interval: .seconds(25))
     }
 
     /// Identity for the activity poller's `.task` — composes everything that
