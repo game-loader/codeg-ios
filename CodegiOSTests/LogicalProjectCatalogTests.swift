@@ -238,6 +238,106 @@ final class LogicalProjectCatalogTests: XCTestCase {
         XCTAssertEqual(ProjectSessionHistory.folders(for: child, inventory: [root, child]).map(\.id), [9])
     }
 
+    private func conversation(_ id: Int, folderID: Int = 7, updated: Double = 1,
+                              pinned: Double? = nil) -> ConversationSummary {
+        ConversationSummary(id: id, folderId: folderID, title: "existing", agentType: .claudeCode,
+                            status: .completed, model: "original-model", gitBranch: nil, externalId: nil,
+                            messageCount: 2, createdAt: .distantPast,
+                            updatedAt: Date(timeIntervalSince1970: updated),
+                            pinnedAt: pinned.map { Date(timeIntervalSince1970: $0) })
+    }
+
+    private func history(_ catalog: ProjectCatalogSnapshot, _ rows: [ConversationSummary]) -> ProjectHistorySnapshot {
+        ProjectHistorySnapshot(serverID: catalog.serverID, configurationRevision: catalog.configurationRevision,
+                               generationID: catalog.generationID, folders: catalog.folders, conversations: rows)
+    }
+
+    func testCombinedHistoryKeepsCollidingIDsOriginalOwnerAndRootWorktreePaths() async throws {
+        let rootA = folder(), rootB = folder(7, "/machine-b/repo")
+        let childA = folder(9, "/a/worktree", parent: 7), childB = folder(9, "/b/worktree", parent: 7)
+        let a = snapshot(UUID(), folders: [rootA, childA], entries: [entry(rootA)])
+        let b = snapshot(UUID(), folders: [rootB, childB], entries: [entry(rootB)])
+        let project = try XCTUnwrap(LogicalProjectProjection.projects([a, b]).first)
+        let rows = LogicalProjectHistory.sessions(for: project, snapshots: [
+            history(a, [conversation(42), conversation(43, folderID: 9)]),
+            history(b, [conversation(42), conversation(43, folderID: 9, pinned: 3)])
+        ])
+        XCTAssertEqual(rows.count, 4)
+        XCTAssertEqual(Set(rows.map(\.id)).count, 4)
+        XCTAssertEqual(Set(rows.map { $0.reference.location.serverID }), [a.serverID, b.serverID])
+        XCTAssertEqual(Set(rows.map { $0.reference.location.path }), ["/repo", "/machine-b/repo", "/a/worktree", "/b/worktree"])
+        XCTAssertEqual(rows.first?.reference.location.serverID, b.serverID, "pins sort across owners")
+        for row in rows {
+            let owner = row.reference.location.serverID == a.serverID ? a : b
+            XCTAssertTrue(row.reference.location.matches(owner))
+            XCTAssertEqual(row.reference.location.folderID, row.conversation.folderId)
+            XCTAssertEqual(row.reference.conversationID, row.conversation.id)
+            XCTAssertEqual(row.conversation.status, .completed)
+            XCTAssertEqual(row.conversation.model, "original-model")
+        }
+    }
+
+    func testCombinedHistoryIncludesEverySuppliedVisibleRowAndExcludesOtherProjectsAndChats() async throws {
+        let root = folder(), checkout = folder(8, "/second-checkout"), child = folder(9, "/linked", parent: 7)
+        let catalog = snapshot(UUID(), folders: [root, checkout, child, folder(90, "/chat", kind: .chat)],
+                               entries: [entry(root), entry(checkout)])
+        let project = try XCTUnwrap(LogicalProjectProjection.projects([catalog]).first)
+        let supplied = [conversation(1), conversation(2, folderID: 8), conversation(3, folderID: 9),
+                        conversation(4, folderID: 90), conversation(5, folderID: 100)]
+        let rows = LogicalProjectHistory.sessions(for: project, snapshots: [history(catalog, supplied)])
+        XCTAssertEqual(Set(rows.map { $0.conversation.id }), [1, 2, 3])
+        XCTAssertEqual(Set(rows.map { $0.reference.location.path }), ["/repo", "/second-checkout", "/linked"])
+        XCTAssertEqual(Set(LogicalProjectHistory.locations(for: project).map(\.reference)),
+                       Set(rows.map { $0.reference.location }), "operation menus use the same concrete locations")
+    }
+
+    func testCombinedHistoryRejectsOtherServerRevisionAndGenerationSnapshots() async throws {
+        let root = folder(), catalog = snapshot(UUID(), folders: [root], entries: [entry(root)])
+        let project = try XCTUnwrap(LogicalProjectProjection.projects([catalog]).first)
+        let stale = [
+            ProjectHistorySnapshot(serverID: UUID(), configurationRevision: catalog.configurationRevision,
+                                   generationID: catalog.generationID, folders: catalog.folders, conversations: [conversation(42)]),
+            ProjectHistorySnapshot(serverID: catalog.serverID, configurationRevision: UUID(),
+                                   generationID: catalog.generationID, folders: catalog.folders, conversations: [conversation(42)]),
+            ProjectHistorySnapshot(serverID: catalog.serverID, configurationRevision: catalog.configurationRevision,
+                                   generationID: UUID(), folders: catalog.folders, conversations: [conversation(42)]),
+            ProjectHistorySnapshot(serverID: catalog.serverID, configurationRevision: catalog.configurationRevision,
+                                   generationID: catalog.generationID, folders: [folder(7, "/previous-path")], conversations: [conversation(42)])
+        ]
+        XCTAssertTrue(LogicalProjectHistory.sessions(for: project, snapshots: stale).isEmpty)
+        XCTAssertEqual(LogicalProjectHistory.sessions(for: project, snapshots: [history(catalog, [conversation(42)])]).count, 1)
+    }
+
+    func testCapturedLocationRejectsPathReuseRemovalAndRetirement() async throws {
+        let root = folder(), catalog = snapshot(UUID(), folders: [root], entries: [entry(root)])
+        let reference = try XCTUnwrap(LogicalProjectProjection.projects([catalog]).first?.setups.first?.reference)
+        func current(_ folders: [FolderDetail], revision: UUID? = nil, generation: UUID? = nil) -> ProjectCatalogSnapshot {
+            ProjectCatalogSnapshot(serverID: catalog.serverID, configurationRevision: revision ?? catalog.configurationRevision,
+                                   generationID: generation ?? catalog.generationID, folders: folders,
+                                   openFolders: folders, identities: [:])
+        }
+        XCTAssertTrue(reference.matches(catalog))
+        XCTAssertFalse(reference.matches(current([folder(7, "/moved")])))
+        XCTAssertFalse(reference.matches(current([])))
+        XCTAssertFalse(reference.matches(current([root], revision: UUID())))
+        XCTAssertFalse(reference.matches(current([root], generation: UUID())))
+        let moved = try XCTUnwrap(LogicalProjectProjection.projects([current([folder(7, "/moved")])]).first?.setups.first?.reference)
+        XCTAssertNotEqual(reference, moved)
+    }
+
+    func testCombinedHistorySortsPinsThenUpdatesAcrossServersAndSurvivesOneMissingHistory() async throws {
+        let root = folder(), a = snapshot(UUID(), folders: [root], entries: [entry(root)])
+        let b = snapshot(UUID(), folders: [root], entries: [entry(root)])
+        let project = try XCTUnwrap(LogicalProjectProjection.projects([a, b]).first)
+        let rows = LogicalProjectHistory.sessions(for: project, snapshots: [
+            history(a, [conversation(1, updated: 100), conversation(2, updated: 200, pinned: 1)]),
+            history(b, [conversation(3, updated: 1, pinned: 3), conversation(4, updated: 300)])
+        ])
+        XCTAssertEqual(rows.map { $0.conversation.id }, [3, 2, 4, 1])
+        XCTAssertEqual(LogicalProjectHistory.sessions(for: project, snapshots: [history(b, [conversation(3)])]).count, 1)
+        XCTAssertEqual(LogicalProjectHistory.locations(for: project).count, 2, "catalog destinations survive missing history")
+    }
+
     func testRetirementClearsSynchronouslyAndRejectsLateResultsInEveryState() async throws {
         let fixture = CatalogFixture(rows: [folder()]), lifetime = ServerBindingLifetime(), model = loader(fixture, lifetime: lifetime)
         await model.refresh()

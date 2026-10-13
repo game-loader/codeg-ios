@@ -16,6 +16,7 @@ struct MultiServerProjectListView: View {
         let id = UUID()
         let workspace: ServerWorkspace
         let folder: FolderDetail
+        let reference: ProjectSetupReference
     }
 
     var body: some View {
@@ -37,13 +38,7 @@ struct MultiServerProjectListView: View {
             if registry.projectCatalogViewMode == .projects {
                 Section("Projects") {
                     ForEach(registry.logicalProjects) { project in
-                        DisclosureGroup {
-                            ForEach(project.setups) { setup in
-                                if let owner = registry.owner(of: setup.reference) {
-                                    setupRow(setup, owner: owner)
-                                }
-                            }
-                        } label: { Text(verbatim: project.name) }
+                        projectRow(project)
                     }
                 }
             }
@@ -96,16 +91,18 @@ struct MultiServerProjectListView: View {
         }
         .sheet(item: $target) { target in
             if let client = target.workspace.client, !target.workspace.isRetired,
-               target.workspace.projectCatalog.folder(id: target.folder.id)?.path == target.folder.path {
+               registry.owner(of: target.reference) === target.workspace {
                 NavigationStack {
                     WorktreeListView(client: client, folder: target.folder,
                                      serverName: target.workspace.server.name,
+                                     isCurrent: { registry.owner(of: target.reference) === target.workspace },
                                      onOpenFolder: { folder in
-                        guard !target.workspace.isRetired else { return }
+                        guard registry.owner(of: target.reference) === target.workspace else { return }
                         self.target = nil
                         registry.openProject(folder.id, on: target.workspace)
                         Task { await target.workspace.projectCatalog.refresh(force: true) }
                     }, onFoldersChanged: {
+                        guard registry.owner(of: target.reference) === target.workspace else { return }
                         Task { await target.workspace.projectCatalog.refresh(force: true) }
                         Task { await target.workspace.activity.refresh(client: client) }
                     })
@@ -148,6 +145,121 @@ struct MultiServerProjectListView: View {
         message: { Text(actionError ?? "") }
     }
 
+    private func projectRow(_ project: LogicalProject) -> some View {
+        let sessions = registry.history(for: project)
+        let owners = registry.workspaces.filter { owner in
+            project.setups.contains { registry.owner(of: $0.reference) === owner }
+        }
+        return DisclosureGroup {
+            ForEach(owners) { owner in historyStatus(owner) }
+            if sessions.isEmpty && registry.hasLoadedHistory(for: project) {
+                Text("No Sessions Yet").foregroundStyle(Theme.textSecondary)
+            }
+            ForEach(sessions) { session in
+                if let owner = registry.owner(of: session.reference.location) {
+                    projectSessionRow(session, owner: owner)
+                }
+            }
+        } label: {
+            HStack {
+                Text(verbatim: project.name)
+                Spacer()
+                projectActions(project)
+            }
+        }
+    }
+
+    private func projectSessionRow(_ session: LogicalProjectSession, owner: ServerWorkspace) -> some View {
+        Button { registry.openExistingSession(session.reference) } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                SessionRow(conversation: session.conversation,
+                           isSelected: owner.model.selectedConversationID == session.reference.conversationID)
+                HStack(spacing: 8) {
+                    Label { Text(verbatim: owner.server.name) } icon: { Image(systemName: "server.rack") }
+                    Label {
+                        if session.folder.isWorktree { Text("Worktree Sessions") }
+                        else { Text("Repository Sessions") }
+                    } icon: {
+                        Image(systemName: session.folder.isWorktree ? "arrow.triangle.branch" : "folder")
+                    }
+                    if session.conversation.isPinned { Image(systemName: "pin.fill") }
+                }
+                .font(.caption2).foregroundStyle(Theme.textSecondary)
+                Text(verbatim: session.reference.location.path)
+                    .font(.caption2).foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1).truncationMode(.middle)
+                if session.folder.isWorktree, let branch = session.folder.gitBranch {
+                    Text(verbatim: branch).font(.caption2).foregroundStyle(Theme.textSecondary)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func projectActions(_ project: LogicalProject) -> some View {
+        let locations = LogicalProjectHistory.locations(for: project)
+        return Menu {
+            Menu("New Task") {
+                ForEach(locations) { location in
+                    if let owner = registry.owner(of: location.reference) {
+                        Button { registry.openNewSession(at: location.reference) } label: {
+                            locationLabel(location, owner: owner)
+                        }
+                    }
+                }
+            }
+            Menu("Open Folder") {
+                ForEach(locations) { location in
+                    if let owner = registry.owner(of: location.reference) {
+                        Button { registry.openProject(at: location.reference) } label: {
+                            locationLabel(location, owner: owner)
+                        }
+                    }
+                }
+            }
+            Menu("Manage Worktrees") {
+                ForEach(locations) { location in
+                    if let owner = registry.owner(of: location.reference) {
+                        Button {
+                            guard registry.owner(of: location.reference) === owner else { return }
+                            target = FolderTarget(workspace: owner, folder: location.folder, reference: location.reference)
+                        } label: {
+                            locationLabel(location, owner: owner)
+                        }
+                    }
+                }
+            }
+        } label: { Image(systemName: "ellipsis.circle") }
+        .accessibilityLabel("Project Actions")
+    }
+
+    private func locationLabel(_ location: ProjectHistoryLocation, owner: ServerWorkspace) -> some View {
+        Label {
+            Text(verbatim: "\(owner.server.name) · \(location.folder.gitBranch ?? location.folder.displayName) · \(location.reference.path)")
+        } icon: {
+            Image(systemName: location.folder.isWorktree ? "arrow.triangle.branch" : "folder")
+        }
+    }
+
+    @ViewBuilder
+    private func historyStatus(_ owner: ServerWorkspace) -> some View {
+        if owner.client != nil {
+            if let error = owner.activity.conversationsError {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(verbatim: owner.server.name).font(.caption.weight(.semibold))
+                    Text(LocalizedStringKey(error)).font(.caption).foregroundStyle(Theme.textSecondary)
+                }
+                Button("Retry Sessions") { Task { await owner.activity.refresh(client: owner.client) } }
+            } else if !owner.activity.hasLoadedConversations {
+                HStack {
+                    Text(verbatim: owner.server.name).font(.caption)
+                    ProgressView("Loading sessions…")
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private func serverStatus(_ owner: ServerWorkspace) -> some View {
         if owner.client == nil {
@@ -166,6 +278,8 @@ struct MultiServerProjectListView: View {
             if owner.projectCatalog.hasLoaded && owner.projectCatalog.setupFolders.isEmpty {
                 Text("No Open Folders").foregroundStyle(Theme.textSecondary)
             }
+            // Also show history state when project disclosures are collapsed.
+            historyStatus(owner)
         }
     }
 
@@ -195,7 +309,7 @@ struct MultiServerProjectListView: View {
             }
             Button {
                 guard registry.owner(of: setup.reference) === owner else { return }
-                target = FolderTarget(workspace: owner, folder: setup.folder)
+                target = FolderTarget(workspace: owner, folder: setup.folder, reference: setup.reference)
             } label: { Label("Manage Worktrees", systemImage: "arrow.triangle.branch") }
         } label: {
             VStack(alignment: .leading, spacing: 3) {

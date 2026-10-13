@@ -16,6 +16,9 @@ final class ActivityModel {
     /// The full folder set (`list_all_folder_details`) — for by-id lookups
     /// (`folderNames`, a conversation's folder by id, incl. worktree/chat folders).
     private(set) var folders: [FolderDetail] = []
+    /// An empty or missing first Activity inventory cannot hide successfully
+    /// loaded conversations from the independent project catalog.
+    private(set) var hasLoadedFolders = false
     /// The workspace-visible folder set (`list_open_folder_details`, open+regular).
     /// The Folders tab renders `displayFolders` derived from this; running counts
     /// and per-folder conversation lists merge worktree children into their root.
@@ -110,6 +113,7 @@ final class ActivityModel {
         fetchGeneration += 1
         conversations = []
         folders = []
+        hasLoadedFolders = false
         openFolders = []
         openFoldersLoaded = false
         hasLoaded = false
@@ -149,7 +153,7 @@ final class ActivityModel {
 
         // Partial success: apply whichever endpoint returned, keep the prior value
         // for one that failed (orphaned rows fall into the "Other" safety net).
-        if let loaded = result.folders { folders = loaded }
+        if let loaded = result.folders { folders = loaded; hasLoadedFolders = true }
         if let loaded = result.openFolders { openFolders = loaded; openFoldersLoaded = true }
         if let loaded = result.conversations {
             conversations = loaded

@@ -2,8 +2,9 @@
 """Portable architecture probe using current AppModel/registry/navigation code.
 
 Requires Docker and swift:6.2-jammy. SwiftUI imports are replaced with Foundation;
-unavailable UI, transport, ActivityModel, catalog/identity and SessionDetailViewModel
-dependencies are explicit doubles. This does NOT run native XCTest, real first-send/stream
+unavailable UI, transport and SessionDetailViewModel dependencies are explicit
+doubles. Catalog, history projection and ActivityModel are production code.
+This does NOT run native XCTest, real first-send/stream
 adoption, RecoveryServer barriers, or a SwiftUI typecheck. Those regressions live
 in ServerWorkspaceArchitectureRecoveryTests.swift for the native CI handoff.
 """
@@ -21,12 +22,22 @@ SOURCES = [
     "CodegiOS/App/SavedServerNavigation.swift",
     "CodegiOS/Persistence/ServerProfile.swift",
     "CodegiOS/Networking/ServerBindingLifetime.swift",
+    "CodegiOS/Models/LogicalProject.swift",
+    "CodegiOS/Features/Projects/ProjectCatalogModel.swift",
+    "CodegiOS/Features/Activity/ActivityModel.swift",
+    "CodegiOS/Models/FolderVisibility.swift",
+    "CodegiOS/Networking/CodegClient+ProjectIdentity.swift",
+    "CodegiOS/Networking/APIError.swift",
 ]
 PARSE = SOURCES + [
     "CodegiOS/App/RootView.swift",
     "CodegiOS/Features/Sessions/SessionListView.swift",
     "CodegiOS/Features/SessionDetail/SessionDetailViewModel.swift",
     "CodegiOS/Features/Projects/MultiServerProjectListView.swift",
+    "CodegiOS/Features/Projects/ProjectDetailView.swift",
+    "CodegiOS/Features/Worktrees/WorktreeListView.swift",
+    "CodegiOSTests/LogicalProjectCatalogTests.swift",
+    "CodegiOSTests/LogicalProjectHistoryRoutingTests.swift",
     "CodegiOSTests/ServerWorkspaceIsolationTests.swift",
     "CodegiOSTests/ServerWorkspaceArchitectureRecoveryTests.swift",
 ]
@@ -34,47 +45,58 @@ PARSE = SOURCES + [
 STUBS = r'''
 import Foundation
 typealias LocalizedStringKey = String
-enum AgentType: String, Hashable { case claudeCode }
+enum AgentType: String, Codable, Hashable, Sendable { case claudeCode }
 struct Machine: Hashable { let id: String }
 enum SettingsLeaf: Hashable {
     case appearance
     init?(slug: String) { guard slug == "appearance" else { return nil }; self = .appearance }
 }
 protocol SessionEventStream {}
-// Catalog/identity are explicit doubles in this architecture-only probe. The
-// separate catalog harness compiles and executes the production Foundation core.
-enum ProjectCatalogViewMode: String { case projects, servers }
-struct ProjectSetupReference {
-    let serverID: UUID
-    let configurationRevision: UUID
-    let generationID: UUID
-    let folderID: Int
-    let path: String
+// Only transport is doubled: bound clients share an initiating fixture. The
+// real catalog, ActivityModel and merged projection consume its endpoint data.
+@MainActor final class SnapshotFixture {
+    var folders: [FolderDetail] = []
+    var failFolders = false
+    var conversations: [ConversationSummary]? = []
+    var conversationsError: String?
+    var identityReads = 0
+    var holdHistory = false
+    var historyContinuation: CheckedContinuation<Void, Never>?
 }
-struct CatalogFolder { let path: String }
-struct LogicalProject {}
-struct ProjectCatalogSnapshot {}
-enum LogicalProjectProjection {
-    static func projects(_ snapshots: [ProjectCatalogSnapshot]) -> [LogicalProject] { [] }
-}
-@MainActor final class ProjectCatalogModel {
-    init(client: CodegClient?, lifetime: ServerBindingLifetime) {}
-    func retire() {}
-    func folder(id: Int) -> CatalogFolder? { nil }
-    func snapshot(serverID: UUID, configurationRevision: UUID) -> ProjectCatalogSnapshot { .init() }
-}
-@MainActor final class ActivityModel { func reset() {} }
 @MainActor final class CodegClient {
     let baseURL: URL
     let token: String
     let lifetime: ServerBindingLifetime?
-    init(baseURL: URL, token: String, lifetime: ServerBindingLifetime? = nil) {
+    let fixture: SnapshotFixture
+    init(baseURL: URL, token: String, lifetime: ServerBindingLifetime? = nil,
+         fixture: SnapshotFixture? = nil) {
         self.baseURL = baseURL; self.token = token; self.lifetime = lifetime
+        self.fixture = fixture ?? SnapshotFixture()
     }
     func bound(to lifetime: ServerBindingLifetime) -> CodegClient {
-        CodegClient(baseURL: baseURL, token: token, lifetime: lifetime)
+        CodegClient(baseURL: baseURL, token: token, lifetime: lifetime, fixture: fixture)
     }
     func checkBinding() throws { try lifetime?.check() }
+    func listFolders() async throws -> [FolderDetail] { try checkBinding(); return fixture.folders }
+    func listOpenFolders() async throws -> [FolderDetail] { try await listFolders() }
+    func postReadJSON<T: Decodable, B: Encodable>(_ endpoint: String, _ body: B) async throws -> T {
+        try checkBinding()
+        precondition(endpoint == "list_repository_project_identities")
+        fixture.identityReads += 1
+        let identity = RepositoryProjectIdentity(projectKey: "github:owner/repo", provider: "github",
+            host: "github.com", repositoryPath: "owner/repo", remoteName: "origin")
+        return fixture.folders.filter { $0.parentId == nil }.map {
+            RepositoryProjectIdentityEntry(folderId: $0.id, path: $0.path, status: .resolved, identity: identity)
+        } as! T
+    }
+    func loadServerSnapshot() async -> ServerSnapshotLoad {
+        if fixture.holdHistory {
+            await withCheckedContinuation { fixture.historyContinuation = $0 }
+        }
+        return ServerSnapshotLoad(folders: fixture.failFolders ? nil : fixture.folders, openFolders: fixture.folders,
+            conversations: fixture.conversations, conversationsError: fixture.conversationsError,
+            message: fixture.conversationsError, cancelled: false)
+    }
 }
 @MainActor final class ServerStore {
     var servers: [ServerProfile]
@@ -115,7 +137,7 @@ enum LogicalProjectProjection {
 PROBE = r'''
 import Foundation
 @main @MainActor struct ArchitectureProbe {
-    static func main() throws {
+    static func main() async throws {
         var passed = 0
         func check(_ condition: @autoclosure () -> Bool, _ label: String) {
             precondition(condition(), label); passed += 1; print("PASS \(label)")
@@ -194,6 +216,108 @@ import Foundation
               "actual registry retires aliased instance once (session double)")
         check(other.session(conversationID: 42) !== session && !other.isRetired,
               "equal IDs remain isolated across actual workspaces")
+
+        // Fresh actual registry owners consume the real catalog + ActivityModel.
+        let merged = ServerWorkspaceRegistry(store: ServerStore(defaults: defaults), defaults: defaults)
+        let ownerA = merged.workspace(for: a.id)!, ownerB = merged.workspace(for: b.id)!
+        func folder(_ id: Int = 7, _ path: String = "/repo", parent: Int? = nil) -> FolderDetail {
+            FolderDetail(id: id, name: "repo", path: path, gitBranch: "topic", defaultAgentType: nil,
+                lastOpenedAt: .distantPast, sortOrder: id, color: "", parentId: parent)
+        }
+        func conversation(_ id: Int = 42, _ folderID: Int = 7) -> ConversationSummary {
+            ConversationSummary(id: id, folderId: folderID, title: "Existing", agentType: .claudeCode,
+                status: .completed, model: nil, gitBranch: nil, externalId: nil, messageCount: 2,
+                createdAt: .distantPast, updatedAt: .distantPast)
+        }
+        let fa = ownerA.client!.fixture, fb = ownerB.client!.fixture
+        fa.folders = [folder(), folder(9, "/a/worktree", parent: 7)]
+        fb.folders = [folder(7, "/b/repo"), folder(9, "/b/worktree", parent: 7)]
+        fa.conversations = [conversation(), conversation(43, 9)]
+        fb.conversations = [conversation(), conversation(43, 9)]
+        fa.holdHistory = true
+        fb.failFolders = true
+        let pending = Task { await ownerA.activity.refresh(client: ownerA.client) }
+        for _ in 0..<1000 where fa.historyContinuation == nil { try await Task.sleep(for: .milliseconds(1)) }
+        check(fa.historyContinuation != nil, "actual Activity history can be held independently")
+        await ownerA.projectCatalog.refresh(); await ownerB.projectCatalog.refresh()
+        await ownerB.activity.refresh(client: ownerB.client)
+        let project = merged.logicalProjects[0]
+        check(merged.logicalProjects.count == 1 && project.setups.count == 2,
+              "actual catalog projects publish while another history is pending")
+        check(merged.history(for: project).count == 2, "other owner's root and worktree histories remain visible")
+        check(!ownerB.activity.hasLoadedFolders && ownerB.activity.hasLoadedConversations,
+              "successful histories use independent catalog when initial Activity inventory fails")
+        check(!merged.hasLoadedHistory(for: project), "pending contributor cannot produce No Sessions Yet")
+        fb.failFolders = false
+        let rootA = project.setups[0].reference
+        merged.openProject(at: rootA)
+        check(merged.selectedServerID == a.id && ownerA.model.contentPath.last == .project(7),
+              "folder-only captured navigation does not await histories")
+        fa.conversations = nil; fa.conversationsError = "Couldn’t load sessions. Retry to refresh history."
+        fa.historyContinuation!.resume(); fa.historyContinuation = nil; fa.holdHistory = false
+        await pending.value
+        check(ownerA.activity.hasLoaded && !ownerA.activity.hasLoadedConversations && ownerA.activity.conversationsError != nil,
+              "actual Activity folder success never fakes an empty successful history")
+        check(!merged.hasLoadedHistory(for: project), "failed contributor cannot produce No Sessions Yet")
+        fa.conversations = [conversation(), conversation(43, 9)]; fa.conversationsError = nil
+        let probes = fa.identityReads
+        await ownerA.activity.refresh(client: ownerA.client)
+        check(fa.identityReads == probes && ownerA.activity.conversationsError == nil,
+              "history retry changes no Git identity reads")
+        check(merged.hasLoadedHistory(for: project), "all successful exact locations yield authoritative history")
+        let rows = merged.history(for: project)
+        check(rows.count == 4 && Set(rows.map(\.id)).count == 4,
+              "actual registry projects colliding conversation IDs with distinct owner/path identities")
+        let rowA = rows.first { $0.reference.location.serverID == a.id && $0.conversation.id == 42 }!
+        let rowB = rows.first { $0.reference.location.serverID == b.id && $0.conversation.id == 42 }!
+        let retainedRequest = NewSessionRequest()
+        let retainedDraft = ownerA.session(request: retainedRequest)!
+        retainedDraft.draft = "unsent folderless"
+        ownerA.model.open(.newSession(retainedRequest))
+        merged.projectCatalogViewMode = .servers; merged.projectCatalogViewMode = .projects
+        merged.selectedServerID = a.id
+        merged.openExistingSession(rowB.reference)
+        check(merged.selectedServerID == b.id && ownerB.model.selectedConversationID == 42
+              && ownerA.model.pendingNewSession == retainedRequest,
+              "combined selection dispatches on captured B owner and preserves A pending draft")
+        merged.openExistingSession(rowA.reference)
+        check(merged.selectedServerID == a.id && ownerA.model.selectedConversationID == 42
+              && ownerA.session(request: retainedRequest) === retainedDraft && retainedDraft.draft == "unsent folderless"
+              && retainedDraft.newRequest?.preselectedFolderID == nil,
+              "combined selection reuses captured A owner and retains its folderless model")
+        let worktreeB = LogicalProjectHistory.locations(for: project).first {
+            $0.reference.serverID == b.id && $0.folder.id == 9
+        }!.reference
+        merged.openProject(at: worktreeB)
+        check(merged.selectedServerID == b.id && ownerB.model.contentPath.last == .project(9)
+              && ownerB.model.pendingNewSession == nil, "Open Folder uses concrete B worktree without a draft")
+        merged.openNewSession(at: worktreeB)
+        check(ownerB.model.pendingNewSession?.preselectedFolderID == 9,
+              "only explicit New Task creates destination-qualified draft")
+        let savedPending = ownerB.model.pendingNewSession
+        fa.folders = [folder(7, "/moved")]
+        await ownerA.projectCatalog.refresh(force: true)
+        merged.openExistingSession(rowA.reference); merged.openProject(at: rootA); merged.openNewSession(at: rootA)
+        check(merged.selectedServerID == b.id && ownerB.model.pendingNewSession == savedPending,
+              "captured session/Open Folder/New Task reject path reuse")
+        fb.folders = [folder(7, "/b/moved")]
+        await ownerB.activity.refresh(client: ownerB.client)
+        ownerB.model.selectedConversationID = nil
+        merged.openExistingSession(rowB.reference)
+        check(ownerB.model.selectedConversationID == nil && merged.owner(of: rowB.reference.location) === ownerB,
+              "captured row rejects mismatched Activity path before independent catalog refresh")
+        check(!merged.hasLoadedHistory(for: project), "changed Activity path cannot produce No Sessions Yet")
+        fb.folders = [folder(7, "/b/repo"), folder(9, "/b/worktree", parent: 7)]
+        fb.conversations = []; await ownerB.activity.refresh(client: ownerB.client)
+        ownerB.model.selectedConversationID = nil
+        merged.openExistingSession(rowB.reference)
+        check(ownerB.model.selectedConversationID == nil, "removed session cannot reopen from captured history")
+        var replacementProfile = a; replacementProfile.configurationRevision = UUID()
+        merged.store.replace(replacementProfile)
+        merged.openExistingSession(rowA.reference); merged.openNewSession(at: rootA); merged.openProject(at: rootA)
+        check(ownerA.isRetired && ownerA.projectCatalog.catalogFolders.isEmpty && merged.owner(of: rootA) == nil
+              && merged.workspace(for: a.id)!.model.pendingNewSession == nil,
+              "retirement/replacement reject captured actions without touching replacement")
         print("\(passed) portable architecture invariants passed; native recovery/UI not executed")
     }
 }
@@ -216,6 +340,13 @@ def check_wiring():
     assert "!queuedTurnIDs.contains($0.id)" in detail
     assert 'String(localized: "Delivery unconfirmed. Check the conversation before retrying.")' in detail
     assert registry.index("let text = session.retirementSnapshot.recoveryText") < registry.index("session.teardown()")
+    projects_mode = projects.split('Section("Projects") {', 1)[1].split('ForEach(registry.workspaces)', 1)[0]
+    assert "projectRow(project)" in projects_mode and "setupRow(" not in projects_mode
+    assert "registry.openExistingSession(session.reference)" in projects
+    assert "registry.openNewSession(at: location.reference)" in projects
+    assert "registry.openProject(at: location.reference)" in projects
+    assert "isCurrent: { registry.owner(of: target.reference) === target.workspace }" in projects
+    assert 'Menu("New Task")' in projects and 'Menu("Open Folder")' in projects and 'Menu("Manage Worktrees")' in projects
     print("PASS source wiring: healthy Chats/catalog exit, both layout callbacks, pending-turn snapshot before teardown", flush=True)
 
 
@@ -230,6 +361,17 @@ def main():
         path = Path(directory)
         for source in SOURCES:
             (path / Path(source).name).write_text((ROOT / source).read_text().replace("import SwiftUI", "import Foundation"))
+        conversation = (ROOT / "CodegiOS/Models/Conversation.swift").read_text()
+        folder = conversation.split("/// Lifecycle status of a conversation row.")[0]
+        status = conversation.split("enum ConversationStatus:", 1)[1].split("/// Posted (no payload)", 1)[0]
+        status = status.split("    var label:", 1)[0] + "    var isLive:" + status.split("    var isLive:", 1)[1]
+        summary = conversation.split("struct ConversationSummary:", 1)[1].split("/// Aggregate token/timing stats", 1)[0]
+        (path / "Folder.swift").write_text((folder + "enum ConversationStatus:" + status + "struct ConversationSummary:" + summary)
+                                          .replace("import SwiftUI", "import Foundation"))
+        snapshot = (ROOT / "CodegiOS/Networking/CodegClient.swift").read_text().split("struct ServerSnapshotLoad {", 1)[1]
+        (path / "Snapshot.swift").write_text("import Foundation\nstruct ServerSnapshotLoad {" + snapshot.split("extension CodegClient {", 1)[0])
+        resolution = (ROOT / "CodegiOS/Models/GitHistory.swift").read_text().split("struct WorktreeResolution:", 1)[1].split("/// A configured git remote", 1)[0]
+        (path / "Resolution.swift").write_text("import Foundation\nstruct WorktreeResolution:" + resolution)
         (path / "Stubs.swift").write_text(STUBS)
         (path / "Probe.swift").write_text(PROBE)
         files = sorted(p.name for p in path.glob("*.swift"))

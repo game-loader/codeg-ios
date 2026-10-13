@@ -10,10 +10,11 @@ struct WorktreeListView: View {
     @State private var base: String
 
     init(client: CodegClient, folder: FolderDetail, serverName: String,
+         isCurrent: @escaping () -> Bool = { true },
          onOpenFolder: @escaping (FolderDetail) -> Void,
          onFoldersChanged: @escaping () -> Void) {
         _model = State(initialValue: WorktreeListViewModel(
-            client: client, folder: folder, serverName: serverName,
+            client: client, folder: folder, serverName: serverName, isCurrent: isCurrent,
             onOpenFolder: onOpenFolder, onFoldersChanged: onFoldersChanged
         ))
         _base = State(initialValue: folder.gitBranch ?? "HEAD")

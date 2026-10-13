@@ -196,10 +196,54 @@ final class ServerWorkspaceRegistry {
     /// Resolve the captured owner and exact path before dispatching a row action.
     func owner(of reference: ProjectSetupReference) -> ServerWorkspace? {
         guard let owner = workspace(for: reference.serverID), !owner.isRetired,
-              owner.id == reference.generationID,
-              owner.server.configurationRevision == reference.configurationRevision,
-              owner.projectCatalog.folder(id: reference.folderID)?.path == reference.path else { return nil }
+              reference.matches(owner.projectCatalog.snapshot(serverID: owner.server.id,
+                  configurationRevision: owner.server.configurationRevision)) else { return nil }
         return owner
+    }
+
+    func history(for project: LogicalProject) -> [LogicalProjectSession] {
+        LogicalProjectHistory.sessions(for: project, snapshots: workspaces.filter { !$0.isRetired }.map {
+            ProjectHistorySnapshot(serverID: $0.server.id, configurationRevision: $0.server.configurationRevision,
+                                   generationID: $0.id, folders: historyFolders(on: $0), conversations: $0.activity.conversations)
+        })
+    }
+
+    private func historyFolders(on owner: ServerWorkspace) -> [FolderDetail] {
+        owner.activity.hasLoadedFolders ? owner.activity.folders : owner.projectCatalog.catalogFolders
+    }
+
+    /// Empty history is authoritative only after every contributing location
+    /// has a successful, current snapshot. Failures and changed paths stay partial.
+    func hasLoadedHistory(for project: LogicalProject) -> Bool {
+        let locations = LogicalProjectHistory.locations(for: project)
+        return !locations.isEmpty && locations.allSatisfy { location in
+            guard let owner = owner(of: location.reference), owner.client != nil,
+                  owner.activity.hasLoadedConversations, owner.activity.conversationsError == nil else { return false }
+            return historyFolders(on: owner).contains {
+                $0.id == location.reference.folderID && $0.path == location.reference.path && $0.kind == .regular
+            }
+        }
+    }
+
+    func openProject(at reference: ProjectSetupReference) {
+        guard let owner = owner(of: reference) else { return }
+        openProject(reference.folderID, on: owner)
+    }
+
+    func openNewSession(at reference: ProjectSetupReference) {
+        guard let owner = owner(of: reference), owner.client != nil else { return }
+        selectedServerID = owner.server.id
+        owner.model.selectedTab = .projects
+        owner.model.open(.newSession(NewSessionRequest(preselectedFolderID: reference.folderID)))
+    }
+
+    func openExistingSession(_ reference: ProjectSessionReference) {
+        guard let owner = owner(of: reference.location), historyFolders(on: owner).contains(where: {
+            $0.id == reference.location.folderID && $0.path == reference.location.path && $0.kind == .regular
+        }), owner.activity.conversations.contains(where: {
+            $0.id == reference.conversationID && $0.folderId == reference.location.folderID
+        }) else { return }
+        openExistingSession(reference.conversationID, on: owner)
     }
 
     func openExistingSession(_ conversationID: Int, on workspace: ServerWorkspace) {

@@ -41,6 +41,13 @@ struct ProjectSetupReference: Hashable, Sendable {
     let generationID: UUID
     let folderID: Int
     let path: String
+
+    func matches(_ snapshot: ProjectCatalogSnapshot) -> Bool {
+        serverID == snapshot.serverID && configurationRevision == snapshot.configurationRevision &&
+        generationID == snapshot.generationID && snapshot.folders.contains {
+            $0.id == folderID && $0.path == path && $0.kind == .regular
+        }
+    }
 }
 
 struct ProjectHostSetup: Identifiable, Sendable {
@@ -133,11 +140,79 @@ enum ProjectSessionHistory {
     }
 
     static func sessions(in folderID: Int, conversations: [ConversationSummary]) -> [ConversationSummary] {
-        conversations.filter { $0.folderId == folderID }.sorted {
-            if $0.isPinned != $1.isPinned { return $0.isPinned }
-            if $0.isPinned, $0.pinnedAt != $1.pinnedAt { return ($0.pinnedAt ?? .distantPast) > ($1.pinnedAt ?? .distantPast) }
-            if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
-            return $0.id < $1.id
+        conversations.filter { $0.folderId == folderID }.sorted(by: precedes)
+    }
+
+    static func precedes(_ lhs: ConversationSummary, _ rhs: ConversationSummary) -> Bool {
+        if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
+        if lhs.isPinned, lhs.pinnedAt != rhs.pinnedAt { return (lhs.pinnedAt ?? .distantPast) > (rhs.pinnedAt ?? .distantPast) }
+        if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+        return lhs.id < rhs.id
+    }
+}
+
+/// A display row and an operation destination both carry the original concrete
+/// folder. Equal conversation IDs on different machines remain distinct.
+struct ProjectSessionReference: Hashable, Sendable {
+    let location: ProjectSetupReference
+    let conversationID: Int
+}
+
+struct ProjectHistoryLocation: Identifiable, Sendable {
+    let reference: ProjectSetupReference
+    let folder: FolderDetail
+    var id: ProjectSetupReference { reference }
+}
+
+struct LogicalProjectSession: Identifiable, Sendable {
+    let reference: ProjectSessionReference
+    let folder: FolderDetail
+    let conversation: ConversationSummary
+    var id: ProjectSessionReference { reference }
+}
+
+struct ProjectHistorySnapshot: Sendable {
+    let serverID: UUID
+    let configurationRevision: UUID
+    let generationID: UUID
+    let folders: [FolderDetail]
+    /// Preserve the endpoint's existing child/delegation visibility semantics.
+    let conversations: [ConversationSummary]
+}
+
+/// Pure display aggregation. No resource IDs, sessions or runtimes are merged.
+enum LogicalProjectHistory {
+    static func locations(for project: LogicalProject) -> [ProjectHistoryLocation] {
+        project.setups.flatMap { setup in
+            ([setup.folder] + setup.worktrees).map { folder in
+                ProjectHistoryLocation(reference: ProjectSetupReference(serverID: setup.reference.serverID,
+                    configurationRevision: setup.reference.configurationRevision,
+                    generationID: setup.reference.generationID, folderID: folder.id, path: folder.path), folder: folder)
+            }
+        }
+    }
+
+    static func sessions(for project: LogicalProject, snapshots: [ProjectHistorySnapshot]) -> [LogicalProjectSession] {
+        locations(for: project).flatMap { location -> [LogicalProjectSession] in
+            let reference = location.reference
+            guard let snapshot = snapshots.first(where: {
+                $0.serverID == reference.serverID && $0.configurationRevision == reference.configurationRevision &&
+                $0.generationID == reference.generationID
+            }) else { return [] }
+            guard snapshot.folders.contains(where: {
+                $0.id == reference.folderID && $0.path == reference.path && $0.kind == .regular
+            }) else { return [] }
+            return ProjectSessionHistory.sessions(in: reference.folderID, conversations: snapshot.conversations).map {
+                LogicalProjectSession(reference: ProjectSessionReference(location: reference, conversationID: $0.id),
+                                      folder: location.folder, conversation: $0)
+            }
+        }.sorted {
+            if ProjectSessionHistory.precedes($0.conversation, $1.conversation) { return true }
+            if ProjectSessionHistory.precedes($1.conversation, $0.conversation) { return false }
+            let lhs = $0.reference.location, rhs = $1.reference.location
+            if lhs.serverID != rhs.serverID { return lhs.serverID.uuidString < rhs.serverID.uuidString }
+            if lhs.folderID != rhs.folderID { return lhs.folderID < rhs.folderID }
+            return lhs.path < rhs.path
         }
     }
 }

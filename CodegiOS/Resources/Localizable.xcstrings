@@ -1,6 +1,38 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+  "Project Actions": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Project Actions"
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "项目操作"
+        }
+      }
+    }
+  },
+  "Retry Sessions": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Retry Sessions"
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "重试加载会话"
+        }
+      }
+    }
+  },
   "Sessions": {
     "localizations": {
       "en": {
