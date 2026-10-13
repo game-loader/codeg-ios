@@ -19,7 +19,7 @@ the text as the git tag message and the GitHub Release notes.
 ### Added
 
 - Group repositories with the same canonical Git source into logical projects across servers, with Projects/Servers views and independent folder/identity loading. Source selection prefers upstream, then origin; host paths and execution remain separate.
-- Browse existing repository and worktree session history directly from folder details, retaining completed/pinned sessions and explicit-only New Task actions.
+- Browse combined logical-project session history across servers and worktrees directly in the project catalog, retaining original server/location labels, completed/pinned sessions and explicit New Task destinations. Folder details keep their session and file/Git/terminal access.
 - Browse saved servers, repositories and registered worktrees in one native catalog, with retained per-server navigation and drafts and optional two-server iPad split views.
 - Manage complete Git worktree inventory, choose a creation base, retry registration separately, and remove checkouts with explicit branch/force confirmation and partial-removal recovery.
 - Fence retired endpoint generations and keep unsent text as read-only recovery records without replaying it to replacement servers.
