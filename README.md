@@ -29,7 +29,7 @@ codeg backend; the app only calls its HTTP + WebSocket API.
 
 ## Multi-server worktrees
 
-Saved servers keep separate navigation, activity and chat drafts. The Folders tab groups repositories and worktrees by server; iPad can show two servers together. Full worktree inventory, creation with a base reference, registration-only recovery and guarded path removal require the updated Codeg Server. See [the iOS worktree guide](docs/multi-host-worktrees.md).
+Saved servers keep separate navigation, activity and chat drafts. The Folders tab defaults to logical projects, grouping repositories with the same Git source across server paths; a Servers view keeps the machine-first catalog. Folder details expose existing repository/worktree sessions with explicit New Task actions. iPad can show two servers together. Source identity and full worktree management require the updated Codeg Server. See [the iOS worktree guide](docs/multi-host-worktrees.md).
 
 ## Requirements
 
