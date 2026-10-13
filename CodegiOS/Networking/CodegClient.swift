@@ -391,6 +391,11 @@ struct CodegClient: Sendable {
         catch { throw APIError.decoding(String(describing: error)) }
     }
 
+    /// Read-only feature adapters use the same bound transport as catalog reads.
+    func postReadJSON<Req: Encodable, Res: Decodable>(_ path: String, _ body: Req) async throws -> Res {
+        try await postJSON(path, body, session: readTransportSession)
+    }
+
     @discardableResult
     func send<Req: Encodable>(_ path: String, body: Req, session: URLSession? = nil) async throws -> Data {
         let encoded: Data
@@ -482,6 +487,7 @@ struct ServerSnapshotLoad {
     /// ``FolderVisibility`` hides worktree children.
     let openFolders: [FolderDetail]?
     let conversations: [ConversationSummary]?
+    var conversationsError: String? = nil
     /// User-facing message for the first failure, or nil when all succeeded.
     let message: String?
     /// The load was cancelled (view disappeared / a newer fetch superseded it) —
@@ -520,6 +526,7 @@ extension CodegClient {
             folders: try? folders.get(),
             openFolders: try? openFolders.get(),
             conversations: try? conversations.get(),
+            conversationsError: conversations.failureError == nil ? nil : "Couldn’t load sessions. Retry to refresh history.",
             message: message,
             cancelled: false
         )

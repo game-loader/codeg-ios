@@ -1,16 +1,17 @@
 import SwiftUI
 
 /// One folder's home: a compact identity header, then a browser over the
-/// folder's **files**, working-tree **changes**, and commit **history** — the
-/// things you actually want when inspecting a project. (Sessions live in the
-/// Chats/Activity tabs; this screen is about the code in the folder.) Files data
+/// folder's files, changes, commits, terminal and existing root/worktree sessions.
+/// Files data
 /// is fetched on demand from the same HTTP API the codeg desktop/web client uses
 /// (`list_directory_with_files`, `git_status`, `git_log`, …).
 struct ProjectDetailView: View {
     let client: CodegClient
     let folderID: Int
     let activity: ActivityModel
-    /// Start a new task in this folder (the only session affordance left here).
+    let catalog: ProjectCatalogModel
+    let onOpenSession: (ConversationSummary) -> Void
+    /// Draft creation is an explicit action, independent of history selection.
     let onNewSession: (FolderDetail) -> Void
 
     var body: some View {
@@ -34,14 +35,13 @@ struct ProjectDetailView: View {
             }
         }
         .task {
-            if !activity.hasLoaded {
-                await activity.refresh(client: client)
-            }
+            if catalog.folder(id: folderID) == nil { await catalog.refresh() }
+            else { await catalog.loadIfNeeded() }
         }
     }
 
     private var folder: FolderDetail? {
-        activity.folders.first { $0.id == folderID }
+        catalog.folder(id: folderID)
     }
 
     // MARK: - Content states
@@ -54,11 +54,18 @@ struct ProjectDetailView: View {
             FolderDetailContent(
                 client: client,
                 folder: folder,
-                activity: activity
+                activity: activity,
+                catalog: catalog,
+                onOpenSession: onOpenSession,
+                onNewSession: onNewSession
             )
             .id(ProjectWorkspaceKey(client: client, folder: folder))
-        } else if !activity.hasLoaded {
+        } else if catalog.isLoading || !catalog.hasLoaded && catalog.folderIssue == nil {
             LoadingView(label: "Loading folder…")
+        } else if let issue = catalog.folderIssue {
+            EmptyStateView(icon: "wifi.exclamationmark", title: "Couldn’t Load Folder",
+                           message: LocalizedStringKey(issue.message), actionTitle: "Retry",
+                           action: { Task { await catalog.refresh(force: true) } })
         } else {
             EmptyStateView(
                 icon: "folder.badge.questionmark",
@@ -79,13 +86,20 @@ private struct FolderDetailContent: View {
     let client: CodegClient
     let folder: FolderDetail
     let activity: ActivityModel
+    let catalog: ProjectCatalogModel
+    let onOpenSession: (ConversationSummary) -> Void
+    let onNewSession: (FolderDetail) -> Void
 
     @State private var runtime: ProjectRuntime?
 
-    init(client: CodegClient, folder: FolderDetail, activity: ActivityModel) {
+    init(client: CodegClient, folder: FolderDetail, activity: ActivityModel, catalog: ProjectCatalogModel,
+         onOpenSession: @escaping (ConversationSummary) -> Void, onNewSession: @escaping (FolderDetail) -> Void) {
         self.client = client
         self.folder = folder
         self.activity = activity
+        self.catalog = catalog
+        self.onOpenSession = onOpenSession
+        self.onNewSession = onNewSession
         _runtime = State(initialValue: ProjectWorkspaceCache.shared.runtime(client: client, folder: folder))
     }
 
@@ -147,6 +161,8 @@ private struct FolderDetailContent: View {
     @ViewBuilder
     private func tabContent(runtime: ProjectRuntime) -> some View {
         switch runtime.tab {
+        case .sessions:
+            sessionHistory
         case .files:
             FolderFilesView(client: client, rootPath: folder.path, dirPath: folder.path, embedded: true)
                 .padding(.horizontal, Theme.Layout.screenHMargin)
@@ -161,14 +177,63 @@ private struct FolderDetailContent: View {
             FolderTerminalView(session: runtime.terminal)
         }
     }
+
+    private var sessionHistory: some View {
+        List {
+            if let error = activity.conversationsError {
+                Section {
+                    Text(LocalizedStringKey(error)).foregroundStyle(Theme.textSecondary)
+                    Button("Retry") { Task { await activity.refresh(client: client) } }
+                }
+            } else if !activity.hasLoadedConversations {
+                ProgressView("Loading sessions…")
+            }
+            ForEach(ProjectSessionHistory.folders(for: folder, inventory: catalog.catalogFolders)) { historyFolder in
+                Section {
+                    let sessions = ProjectSessionHistory.sessions(in: historyFolder.id, conversations: activity.conversations)
+                    if sessions.isEmpty && activity.hasLoadedConversations && activity.conversationsError == nil {
+                        Text("No Sessions Yet").foregroundStyle(Theme.textSecondary)
+                    }
+                    ForEach(sessions) { conversation in
+                        SessionRow(conversation: conversation, isSelected: false,
+                                   onTap: {
+                            guard catalog.folder(id: historyFolder.id)?.path == historyFolder.path else { return }
+                            onOpenSession(conversation)
+                        })
+                    }
+                    Button("New Task") {
+                        guard catalog.folder(id: historyFolder.id)?.path == historyFolder.path else { return }
+                        onNewSession(historyFolder)
+                    }
+                } header: {
+                    if historyFolder.id == folder.id {
+                        if folder.isWorktree { Text("Worktree Sessions") }
+                        else { Text("Repository Sessions") }
+                    } else {
+                        VStack(alignment: .leading) {
+                            Text("Worktree Sessions")
+                            Text(historyFolder.gitBranch ?? historyFolder.displayName)
+                            Text(historyFolder.path).font(.caption2)
+                        }
+                    }
+                }
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .task {
+            if !activity.hasLoadedConversations && !activity.isRefreshing { await activity.refresh(client: client) }
+        }
+        .refreshable { await activity.refresh(client: client) }
+    }
 }
 
 /// The Files / Changes / Commits selector — mirrors the codeg desktop aux panel.
 enum FolderTab: String, CaseIterable, Identifiable {
-    case files, changes, commits, terminal
+    case sessions, files, changes, commits, terminal
     var id: String { rawValue }
     var label: LocalizedStringKey {
         switch self {
+        case .sessions: "Sessions"
         case .files: "Files"
         case .changes: "Changes"
         case .commits: "Commits"

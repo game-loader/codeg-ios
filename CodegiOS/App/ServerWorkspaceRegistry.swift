@@ -21,6 +21,7 @@ final class ServerWorkspace: Identifiable {
     let client: CodegClient?
     let model: AppModel
     let lifetime: ServerBindingLifetime
+    let projectCatalog: ProjectCatalogModel
     @ObservationIgnored private var sessions: [String: SessionDetailViewModel] = [:]
     @ObservationIgnored private let eventStreamFactory: (() -> any SessionEventStream)?
     var activity: ActivityModel { model.activity }
@@ -34,6 +35,7 @@ final class ServerWorkspace: Identifiable {
         self.server = server
         self.eventStreamFactory = eventStreamFactory
         self.client = client?.bound(to: lifetime)
+        self.projectCatalog = ProjectCatalogModel(client: self.client, lifetime: lifetime)
         self.model = AppModel(serverStore: store, serverID: server.id,
                               fixedClient: self.client)
     }
@@ -75,6 +77,7 @@ final class ServerWorkspace: Identifiable {
     /// sends recovered content to a replacement endpoint.
     func retire() -> [RecoveredServerDraft] {
         guard !isRetired else { return [] }
+        projectCatalog.retire()
         lifetime.invalidate()
         var retiredModels: Set<ObjectIdentifier> = []
         let recovery = sessions.values.compactMap { session -> RecoveredServerDraft? in
@@ -118,10 +121,14 @@ final class ServerWorkspaceRegistry {
         }
     }
     var secondaryServerID: UUID?
+    var projectCatalogViewMode: ProjectCatalogViewMode {
+        didSet { defaults.set(projectCatalogViewMode.rawValue, forKey: Self.catalogViewKey) }
+    }
     private let defaults: UserDefaults
     private let clientProvider: (ServerProfile) -> CodegClient?
     @ObservationIgnored private let eventStreamFactory: (() -> any SessionEventStream)?
     private static let recoveryKey = "codeg.multiServer.recoveredDrafts.v1"
+    private static let catalogViewKey = "codeg.multiServer.projectCatalogView.v1"
 
     init(store: ServerStore? = nil, defaults: UserDefaults = .standard,
          clientProvider: ((ServerProfile) -> CodegClient?)? = nil,
@@ -129,6 +136,8 @@ final class ServerWorkspaceRegistry {
         let store = store ?? ServerStore(defaults: defaults)
         self.store = store
         self.defaults = defaults
+        self.projectCatalogViewMode = defaults.string(forKey: Self.catalogViewKey)
+            .flatMap(ProjectCatalogViewMode.init(rawValue:)) ?? .projects
         self.clientProvider = clientProvider ?? { store.client(for: $0) }
         self.eventStreamFactory = eventStreamFactory
         let persisted = defaults.string(forKey: "codeg.lastSelectedServerID").flatMap(UUID.init)
@@ -176,6 +185,27 @@ final class ServerWorkspaceRegistry {
         selectedServerID = workspace.server.id
         workspace.model.selectedTab = .projects
         workspace.model.open(.project(folderID))
+    }
+
+    var logicalProjects: [LogicalProject] {
+        LogicalProjectProjection.projects(workspaces.filter { !$0.isRetired }.map {
+            $0.projectCatalog.snapshot(serverID: $0.server.id, configurationRevision: $0.server.configurationRevision)
+        })
+    }
+
+    /// Resolve the captured owner and exact path before dispatching a row action.
+    func owner(of reference: ProjectSetupReference) -> ServerWorkspace? {
+        guard let owner = workspace(for: reference.serverID), !owner.isRetired,
+              owner.id == reference.generationID,
+              owner.server.configurationRevision == reference.configurationRevision,
+              owner.projectCatalog.folder(id: reference.folderID)?.path == reference.path else { return nil }
+        return owner
+    }
+
+    func openExistingSession(_ conversationID: Int, on workspace: ServerWorkspace) {
+        guard !workspace.isRetired, workspaces.contains(where: { $0 === workspace }) else { return }
+        selectedServerID = workspace.server.id
+        workspace.model.open(.conversation(conversationID))
     }
 
     func showSingleServer() { secondaryServerID = nil }

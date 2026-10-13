@@ -140,6 +140,96 @@ final class ProjectRuntimeRetentionTests: XCTestCase {
         XCTAssertTrue(cache.runtime(client: client(replacement), folder: folder()) === next)
     }
 
+    func testCatalogModeAndExistingSessionSelectionPreserveOwningDraftAndProjectRuntime() async throws {
+        let a = try WorktreeTestFixture(), b = try WorktreeTestFixture()
+        let suite = "ProjectCatalogRetention.\(UUID())", defaults = UserDefaults(suiteName: suite)!
+        defer { a.close(); b.close(); defaults.removePersistentDomain(forName: suite) }
+        let pa = ServerProfile(name: "A", urlString: a.client.baseURL.absoluteString)
+        let pb = ServerProfile(name: "B", urlString: b.client.baseURL.absoluteString)
+        defaults.set(try JSONEncoder().encode([pa, pb]), forKey: "codeg.servers.v1")
+        let registry = ServerWorkspaceRegistry(store: ServerStore(defaults: defaults), defaults: defaults,
+                                              clientProvider: { $0.id == pa.id ? a.client : b.client })
+        let ownerA = try XCTUnwrap(registry.workspace(for: pa.id)), ownerB = try XCTUnwrap(registry.workspace(for: pb.id))
+        defer { _ = ownerA.retire(); _ = ownerB.retire() }
+        let runtime = try XCTUnwrap(ProjectWorkspaceCache.shared.runtime(client: ownerA.client!, folder: a.folder))
+        runtime.tab = .terminal
+        let terminal = runtime.terminal, emulator = terminal.view
+        let draftRequest = NewSessionRequest(), draft = try XCTUnwrap(ownerA.session(request: draftRequest))
+        draft.draft = "folderless draft"
+        ownerA.model.open(.project(7))
+        ownerA.model.open(.newSession(draftRequest))
+        let originalPending = ownerA.model.pendingNewSession, originalPath = ownerA.model.contentPath
+        let aSession = try XCTUnwrap(ownerA.session(conversationID: 42))
+        let bSession = try XCTUnwrap(ownerB.session(conversationID: 42))
+        aSession.draft = "A conversation draft"
+        bSession.draft = "B conversation draft"
+        XCTAssertEqual(registry.projectCatalogViewMode, .projects)
+        registry.projectCatalogViewMode = .servers
+        registry.projectCatalogViewMode = .projects
+        XCTAssertEqual(ownerA.model.pendingNewSession, originalPending)
+        XCTAssertEqual(ownerA.model.contentPath, originalPath)
+        XCTAssertTrue(ownerA.session(request: draftRequest) === draft)
+        XCTAssertNil(draft.newRequest?.preselectedFolderID)
+        registry.selectedServerID = pb.id
+        registry.openExistingSession(42, on: ownerA)
+        XCTAssertEqual(registry.selectedServerID, pa.id)
+        XCTAssertEqual(ownerA.model.selectedConversationID, 42)
+        XCTAssertNil(ownerA.model.pendingNewSession)
+        XCTAssertNil(ownerB.model.selectedConversationID)
+        XCTAssertTrue(ownerA.session(conversationID: 42) === aSession)
+        XCTAssertTrue(ownerB.session(conversationID: 42) === bSession)
+        XCTAssertFalse(aSession === bSession)
+        XCTAssertNil(aSession.newRequest)
+        XCTAssertEqual(bSession.draft, "B conversation draft")
+        XCTAssertEqual(draft.draft, "folderless draft")
+        let retained = try XCTUnwrap(ProjectWorkspaceCache.shared.runtime(client: ownerA.client!, folder: a.folder))
+        XCTAssertTrue(retained === runtime)
+        XCTAssertTrue(retained.terminal === terminal)
+        XCTAssertTrue(retained.terminal.view === emulator)
+        XCTAssertEqual(retained.tab, .terminal)
+        // Only this explicit request creates a new folder-backed task.
+        let explicit = NewSessionRequest(preselectedFolderID: 7)
+        ownerA.model.open(.newSession(explicit))
+        XCTAssertEqual(ownerA.model.pendingNewSession, explicit)
+        XCTAssertEqual(ownerA.session(request: explicit)?.newRequest?.preselectedFolderID, 7)
+        registry.projectCatalogViewMode = .servers
+        let restored = ServerWorkspaceRegistry(store: ServerStore(defaults: defaults), defaults: defaults,
+                                              clientProvider: { $0.id == pa.id ? a.client : b.client })
+        defer { for workspace in restored.workspaces { _ = workspace.retire() } }
+        XCTAssertEqual(restored.projectCatalogViewMode, .servers)
+    }
+
+    func testCatalogOwnerReferencesRejectReplacementGenerationAndRetirementClearsMetadata() async throws {
+        let fixture = try WorktreeTestFixture(), suite = "ProjectCatalogOwner.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { fixture.close(); defaults.removePersistentDomain(forName: suite) }
+        var profile = ServerProfile(name: "A", urlString: fixture.client.baseURL.absoluteString)
+        defaults.set(try JSONEncoder().encode([profile]), forKey: "codeg.servers.v1")
+        let store = ServerStore(defaults: defaults)
+        let registry = ServerWorkspaceRegistry(store: store, defaults: defaults, clientProvider: { _ in fixture.client })
+        let owner = try XCTUnwrap(registry.workspace(for: profile.id))
+        defer { for workspace in registry.workspaces { _ = workspace.retire() } }
+        fixture.server.enqueue("list_open_folder_details", WorktreeTestReply(data: try WorktreeTestReply.json([WorktreeTestServer.folder("/repo", id: 7)])))
+        fixture.server.enqueue("list_repository_project_identities", WorktreeTestReply(data: Data(#"[{"folder_id":7,"path":"/repo","status":"resolved","identity":null}]"#.utf8)))
+        await owner.projectCatalog.refresh()
+        let reference = try XCTUnwrap(registry.logicalProjects.first?.setups.first?.reference)
+        XCTAssertTrue(registry.owner(of: reference) === owner)
+        profile.name = "Renamed"
+        XCTAssertTrue(store.update(profile, token: nil))
+        XCTAssertTrue(registry.workspace(for: profile.id) === owner)
+        XCTAssertTrue(registry.owner(of: reference) === owner)
+        profile.urlString = "https://replacement.invalid"
+        XCTAssertTrue(store.update(profile, token: nil))
+        XCTAssertTrue(owner.isRetired)
+        XCTAssertTrue(owner.projectCatalog.folders.isEmpty)
+        XCTAssertTrue(owner.projectCatalog.identities.isEmpty)
+        XCTAssertNil(registry.owner(of: reference))
+        let replacement = try XCTUnwrap(registry.workspace(for: profile.id))
+        XCTAssertFalse(replacement === owner)
+        registry.openExistingSession(42, on: owner)
+        XCTAssertNil(replacement.model.selectedConversationID)
+    }
+
     func testAlreadyRetiredGenerationNeverCreatesRuntime() async {
         let cache = ProjectWorkspaceCache()
         let lifetime = ServerBindingLifetime()

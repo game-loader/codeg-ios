@@ -29,6 +29,9 @@ final class ActivityModel {
     private(set) var error: String?
     private(set) var isRefreshing = false
     private(set) var hasLoaded = false
+    /// Folder success cannot imply an empty, successfully loaded history.
+    private(set) var hasLoadedConversations = false
+    private(set) var conversationsError: String?
 
     /// Monotonic token so a slow fetch can't clobber a newer one's results
     /// (also bumped by `reset()` to invalidate in-flight fetches).
@@ -110,6 +113,8 @@ final class ActivityModel {
         openFolders = []
         openFoldersLoaded = false
         hasLoaded = false
+        hasLoadedConversations = false
+        conversationsError = nil
         isRefreshing = false
         error = nil
         lastRefreshed = nil
@@ -146,7 +151,11 @@ final class ActivityModel {
         // for one that failed (orphaned rows fall into the "Other" safety net).
         if let loaded = result.folders { folders = loaded }
         if let loaded = result.openFolders { openFolders = loaded; openFoldersLoaded = true }
-        if let loaded = result.conversations { conversations = loaded }
+        if let loaded = result.conversations {
+            conversations = loaded
+            hasLoadedConversations = true
+        }
+        conversationsError = result.conversationsError
 
         if result.anySucceeded {
             hasLoaded = true

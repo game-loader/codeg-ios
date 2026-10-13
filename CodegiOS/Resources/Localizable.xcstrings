@@ -1,6 +1,214 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+  "Sessions": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Sessions"
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "会话"
+        }
+      }
+    }
+  },
+  "Catalog View": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Catalog View"
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "目录视图"
+        }
+      }
+    }
+  },
+  "Projects": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Projects"
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "项目"
+        }
+      }
+    }
+  },
+  "No Open Folders": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "No Open Folders"
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "没有已打开的文件夹"
+        }
+      }
+    }
+  },
+  "Identity unavailable": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Identity unavailable"
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "项目标识暂不可用"
+        }
+      }
+    }
+  },
+  "Repository Sessions": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Repository Sessions"
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "仓库会话"
+        }
+      }
+    }
+  },
+  "Worktree Sessions": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Worktree Sessions"
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "工作树会话"
+        }
+      }
+    }
+  },
+  "No Sessions Yet": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "No Sessions Yet"
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "暂无会话"
+        }
+      }
+    }
+  },
+  "Couldn’t Load Folder": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Couldn’t Load Folder"
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "无法加载文件夹"
+        }
+      }
+    }
+  },
+  "Couldn’t load folders. Retry to refresh this server.": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Couldn’t load folders. Retry to refresh this server."
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "无法加载文件夹。请重试以刷新此服务器。"
+        }
+      }
+    }
+  },
+  "Project identity is unavailable. Showing the last known setup.": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Project identity is unavailable. Showing the last known setup."
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "项目标识暂不可用。正在显示上次已知的配置。"
+        }
+      }
+    }
+  },
+  "Upgrade this Codeg server to group repositories across servers.": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Upgrade this Codeg server to group repositories across servers."
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "请升级此 Codeg 服务器，以跨服务器归组仓库。"
+        }
+      }
+    }
+  },
+  "Couldn’t load sessions. Retry to refresh history.": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Couldn’t load sessions. Retry to refresh history."
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "无法加载会话。请重试以刷新历史记录。"
+        }
+      }
+    }
+  },
     "Worktrees": {
       "localizations": {
         "en": {

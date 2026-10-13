@@ -87,6 +87,14 @@ private struct ServerWorkspaceView: View {
             .environment(\.serverWorkspaceVisible, isVisible)
             .disabled(!isVisible)
             .task(id: activityPulseID) { await refreshActivity() }
+            .task(id: activityPulseID) {
+                guard scenePhase == .active, !workspace.isRetired else { return }
+                await workspace.projectCatalog.loadIfNeeded()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .foldersDidChange)) { _ in
+                guard !workspace.isRetired else { return }
+                Task { await workspace.projectCatalog.refresh(force: true) }
+            }
     }
 
     @ViewBuilder private var shell: some View {
@@ -439,7 +447,13 @@ private struct ServerWorkspaceView: View {
                     client: client,
                     folderID: id,
                     activity: model.activity,
-                    onNewSession: { model.open(.newSession(NewSessionRequest(preselectedFolderID: $0.id))) }
+                    catalog: workspace.projectCatalog,
+                    onOpenSession: { registry.openExistingSession($0.id, on: workspace) },
+                    onNewSession: { folder in
+                        guard !workspace.isRetired,
+                              workspace.projectCatalog.folder(id: folder.id)?.path == folder.path else { return }
+                        model.open(.newSession(NewSessionRequest(preselectedFolderID: folder.id)))
+                    }
                 )
                 .id("\(server.id)|folder-\(id)")
             case .machines:

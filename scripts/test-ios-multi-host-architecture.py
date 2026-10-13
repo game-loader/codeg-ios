@@ -2,8 +2,8 @@
 """Portable architecture probe using current AppModel/registry/navigation code.
 
 Requires Docker and swift:6.2-jammy. SwiftUI imports are replaced with Foundation;
-unavailable UI, transport, ActivityModel and SessionDetailViewModel dependencies
-are explicit doubles. This does NOT run native XCTest, real first-send/stream
+unavailable UI, transport, ActivityModel, catalog/identity and SessionDetailViewModel
+dependencies are explicit doubles. This does NOT run native XCTest, real first-send/stream
 adoption, RecoveryServer barriers, or a SwiftUI typecheck. Those regressions live
 in ServerWorkspaceArchitectureRecoveryTests.swift for the native CI handoff.
 """
@@ -41,6 +41,28 @@ enum SettingsLeaf: Hashable {
     init?(slug: String) { guard slug == "appearance" else { return nil }; self = .appearance }
 }
 protocol SessionEventStream {}
+// Catalog/identity are explicit doubles in this architecture-only probe. The
+// separate catalog harness compiles and executes the production Foundation core.
+enum ProjectCatalogViewMode: String { case projects, servers }
+struct ProjectSetupReference {
+    let serverID: UUID
+    let configurationRevision: UUID
+    let generationID: UUID
+    let folderID: Int
+    let path: String
+}
+struct CatalogFolder { let path: String }
+struct LogicalProject {}
+struct ProjectCatalogSnapshot {}
+enum LogicalProjectProjection {
+    static func projects(_ snapshots: [ProjectCatalogSnapshot]) -> [LogicalProject] { [] }
+}
+@MainActor final class ProjectCatalogModel {
+    init(client: CodegClient?, lifetime: ServerBindingLifetime) {}
+    func retire() {}
+    func folder(id: Int) -> CatalogFolder? { nil }
+    func snapshot(serverID: UUID, configurationRevision: UUID) -> ProjectCatalogSnapshot { .init() }
+}
 @MainActor final class ActivityModel { func reset() {} }
 @MainActor final class CodegClient {
     let baseURL: URL
@@ -200,7 +222,7 @@ def check_wiring():
 def main():
     check_wiring()
     subprocess.run([
-        "docker", "run", "--rm", "-v", f"{ROOT}:/repo:ro", "-w", "/repo", IMAGE,
+        "docker", "run", "--rm", "--network", "none", "-v", f"{ROOT}:/repo:ro", "-w", "/repo", IMAGE,
         "swiftc", "-frontend", "-parse", *PARSE,
     ], check=True)
     print(f"PASS Swift 6.2 syntax parse: {len(PARSE)} current source/test files", flush=True)
@@ -212,11 +234,11 @@ def main():
         (path / "Probe.swift").write_text(PROBE)
         files = sorted(p.name for p in path.glob("*.swift"))
         subprocess.run([
-            "docker", "run", "--rm", "-v", f"{path}:/probe", "-w", "/probe", IMAGE,
+            "docker", "run", "--rm", "--network", "none", "-v", f"{path}:/probe", "-w", "/probe", IMAGE,
             "swiftc", "-swift-version", "5", "-parse-as-library", *files, "-o", "probe",
         ], check=True)
         subprocess.run([
-            "docker", "run", "--rm", "-v", f"{path}:/probe", "-w", "/probe", IMAGE, "./probe",
+            "docker", "run", "--rm", "--network", "none", "-v", f"{path}:/probe", "-w", "/probe", IMAGE, "./probe",
         ], check=True)
 
 
