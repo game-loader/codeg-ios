@@ -19,6 +19,8 @@ final class ActivityModel {
     /// An empty or missing first Activity inventory cannot hide successfully
     /// loaded conversations from the independent project catalog.
     private(set) var hasLoadedFolders = false
+    private(set) var foldersReadOrder: UInt64 = 0
+    private(set) var openFoldersReadOrder: UInt64 = 0
     /// The workspace-visible folder set (`list_open_folder_details`, open+regular).
     /// The Folders tab renders `displayFolders` derived from this; running counts
     /// and per-folder conversation lists merge worktree children into their root.
@@ -114,6 +116,8 @@ final class ActivityModel {
         conversations = []
         folders = []
         hasLoadedFolders = false
+        foldersReadOrder = 0
+        openFoldersReadOrder = 0
         openFolders = []
         openFoldersLoaded = false
         hasLoaded = false
@@ -144,6 +148,7 @@ final class ActivityModel {
         }
         fetchGeneration += 1
         let token = fetchGeneration
+        let readOrder = FolderInventoryReadOrder.next()
         isRefreshing = true
         defer { if token == fetchGeneration { isRefreshing = false } }
 
@@ -153,8 +158,12 @@ final class ActivityModel {
 
         // Partial success: apply whichever endpoint returned, keep the prior value
         // for one that failed (orphaned rows fall into the "Other" safety net).
-        if let loaded = result.folders { folders = loaded; hasLoadedFolders = true }
-        if let loaded = result.openFolders { openFolders = loaded; openFoldersLoaded = true }
+        if let loaded = result.folders {
+            folders = loaded; hasLoadedFolders = true; foldersReadOrder = readOrder
+        }
+        if let loaded = result.openFolders {
+            openFolders = loaded; openFoldersLoaded = true; openFoldersReadOrder = readOrder
+        }
         if let loaded = result.conversations {
             conversations = loaded
             hasLoadedConversations = true

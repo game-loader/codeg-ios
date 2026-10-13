@@ -1,5 +1,17 @@
 import Foundation
 
+/// Comparable read ordering across independent folder loaders. Publish an order
+/// only on success, but allocate it before reading: an Activity snapshot delayed
+/// by history must not supersede a catalog inventory read started after it.
+@MainActor
+enum FolderInventoryReadOrder {
+    private static var sequence: UInt64 = 0
+    static func next() -> UInt64 {
+        sequence += 1
+        return sequence
+    }
+}
+
 /// Safe server-derived display metadata. Execution never uses a canonical key.
 struct RepositoryProjectIdentity: Codable, Hashable, Sendable {
     let projectKey: String

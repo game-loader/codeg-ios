@@ -3,7 +3,8 @@
 
 Requires Docker and swift:6.2-jammy. SwiftUI imports are replaced with Foundation;
 unavailable UI, transport and SessionDetailViewModel dependencies are explicit
-doubles. Catalog, history projection and ActivityModel are production code.
+doubles. Catalog, history projection and ActivityModel are production code;
+the session double also executes the unchanged production loadDraftOptions body.
 This does NOT run native XCTest, real first-send/stream
 adoption, RecoveryServer barriers, or a SwiftUI typecheck. Those regressions live
 in ServerWorkspaceArchitectureRecoveryTests.swift for the native CI handoff.
@@ -45,7 +46,9 @@ PARSE = SOURCES + [
 STUBS = r'''
 import Foundation
 typealias LocalizedStringKey = String
+extension String { init(localized: String) { self = localized } }
 enum AgentType: String, Codable, Hashable, Sendable { case claudeCode }
+struct DraftAgent { let available = true, enabled = true, sortOrder = 0; let agentType = AgentType.claudeCode }
 struct Machine: Hashable { let id: String }
 enum SettingsLeaf: Hashable {
     case appearance
@@ -56,12 +59,16 @@ protocol SessionEventStream {}
 // real catalog, ActivityModel and merged projection consume its endpoint data.
 @MainActor final class SnapshotFixture {
     var folders: [FolderDetail] = []
+    var openFolders: [FolderDetail]?
     var failFolders = false
+    var failOpenFolders = false
     var conversations: [ConversationSummary]? = []
     var conversationsError: String?
     var identityReads = 0
     var holdHistory = false
     var historyContinuation: CheckedContinuation<Void, Never>?
+    var holdDraftFolders = false
+    var draftContinuation: CheckedContinuation<Void, Never>?
 }
 @MainActor final class CodegClient {
     let baseURL: URL
@@ -77,8 +84,20 @@ protocol SessionEventStream {}
         CodegClient(baseURL: baseURL, token: token, lifetime: lifetime, fixture: fixture)
     }
     func checkBinding() throws { try lifetime?.check() }
-    func listFolders() async throws -> [FolderDetail] { try checkBinding(); return fixture.folders }
-    func listOpenFolders() async throws -> [FolderDetail] { try await listFolders() }
+    func listFolders() async throws -> [FolderDetail] {
+        try checkBinding()
+        if fixture.holdDraftFolders {
+            await withCheckedContinuation { fixture.draftContinuation = $0 }
+        }
+        if fixture.failFolders { throw APIError.unauthorized }
+        return fixture.folders
+    }
+    func listOpenFolders() async throws -> [FolderDetail] {
+        try checkBinding()
+        if fixture.failOpenFolders { throw APIError.unauthorized }
+        return fixture.openFolders ?? fixture.folders
+    }
+    func listAgents() async throws -> [DraftAgent] { [DraftAgent()] }
     func postReadJSON<T: Decodable, B: Encodable>(_ endpoint: String, _ body: B) async throws -> T {
         try checkBinding()
         precondition(endpoint == "list_repository_project_identities")
@@ -90,10 +109,12 @@ protocol SessionEventStream {}
         } as! T
     }
     func loadServerSnapshot() async -> ServerSnapshotLoad {
+        let folders = fixture.failFolders ? nil : fixture.folders
+        let open = fixture.failOpenFolders ? nil : (fixture.openFolders ?? fixture.folders)
         if fixture.holdHistory {
             await withCheckedContinuation { fixture.historyContinuation = $0 }
         }
-        return ServerSnapshotLoad(folders: fixture.failFolders ? nil : fixture.folders, openFolders: fixture.folders,
+        return ServerSnapshotLoad(folders: folders, openFolders: open,
             conversations: fixture.conversations, conversationsError: fixture.conversationsError,
             message: fixture.conversationsError, cancelled: false)
     }
@@ -114,6 +135,16 @@ protocol SessionEventStream {}
     }
 }
 @MainActor final class SessionDetailViewModel {
+    let client: CodegClient
+    var folder: FolderDetail?
+    var projectFolder: FolderDetail? { folder?.kind == .chat ? nil : folder }
+    var allFolders: [FolderDetail] = [], availableFolders: [FolderDetail] = []
+    var availableAgents: [AgentType] = [.claudeCode]
+    var selectedAgent: AgentType?
+    var currentBranch: String?
+    var didSelectDraftFolder = false, hasStartedFirstSend = false
+    struct InsertModel { var agentType: AgentType = .claudeCode }
+    var insertModel = InsertModel()
     struct QueueItem { let text: String }
     struct Snapshot { let recoveryText: String }
     var conversationID: Int?
@@ -122,15 +153,21 @@ protocol SessionEventStream {}
     var queuedMessages: [QueueItem] = []
     var teardownCount = 0
     init(client: CodegClient, conversationID: Int, eventStreamFactory: (() -> any SessionEventStream)? = nil) {
+        self.client = client
         self.conversationID = conversationID
     }
     init(client: CodegClient, newSession: NewSessionRequest, eventStreamFactory: (() -> any SessionEventStream)? = nil) {
+        self.client = client
         self.newRequest = newSession
     }
     var retirementSnapshot: Snapshot {
         Snapshot(recoveryText: ([draft] + queuedMessages.map(\.text)).filter { !$0.isEmpty }.joined(separator: "\n\n"))
     }
     func teardown() { teardownCount += 1 }
+    func loadDraftOptionsForProbe() async throws {
+        try await loadDraftOptions(preselectedFolderID: newRequest?.preselectedFolderID)
+    }
+    // PRODUCTION_DRAFT_LOADER
 }
 '''
 
@@ -139,8 +176,10 @@ import Foundation
 @main @MainActor struct ArchitectureProbe {
     static func main() async throws {
         var passed = 0
+        var failed = 0
         func check(_ condition: @autoclosure () -> Bool, _ label: String) {
-            precondition(condition(), label); passed += 1; print("PASS \(label)")
+            if condition() { passed += 1; print("PASS \(label)") }
+            else { failed += 1; print("FAIL \(label)") }
         }
         let suite = "PortableArchitectureProbe.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
@@ -294,19 +333,86 @@ import Foundation
         merged.openNewSession(at: worktreeB)
         check(ownerB.model.pendingNewSession?.preselectedFolderID == 9,
               "only explicit New Task creates destination-qualified draft")
+        let exactDraft = ownerB.session(request: ownerB.model.pendingNewSession!)!
+        try await exactDraft.loadDraftOptionsForProbe()
+        check(exactDraft.newRequest?.preselectedFolderPath == "/b/worktree" && exactDraft.folder?.path == "/b/worktree",
+              "captured New Task preserves exact worktree path through production loader")
+        // Execute the actual asynchronous production loader after a valid click.
+        for changed in [[folder(9, "/b/moved", parent: 7)], []] {
+            merged.openNewSession(at: worktreeB)
+            let capturedRequest = ownerB.model.pendingNewSession!
+            let capturedDraft = ownerB.session(request: capturedRequest)!
+            fb.openFolders = [folder(9, "/b/worktree", parent: 7)]
+            fb.holdDraftFolders = true
+            let loading = Task { () -> Bool in
+                do { try await capturedDraft.loadDraftOptionsForProbe(); return false }
+                catch { return true }
+            }
+            for _ in 0..<1000 where fb.draftContinuation == nil { try await Task.sleep(for: .milliseconds(1)) }
+            check(fb.draftContinuation != nil, "actual draft loader waits for asynchronous full inventory")
+            fb.folders = changed
+            fb.draftContinuation!.resume(); fb.draftContinuation = nil; fb.holdDraftFolders = false
+            let rejected = await loading.value
+            check(rejected && capturedDraft.folder == nil,
+                  "valid New Task click rejects async move/removal despite stale open inventory")
+        }
+        fb.openFolders = nil
+        fb.folders = [folder(7, "/b/repo"), folder(9, "/b/worktree", parent: 7)]
+        let legacy = ownerB.session(request: NewSessionRequest(preselectedFolderID: 9))!
+        try await legacy.loadDraftOptionsForProbe()
+        let chat = ownerB.session(request: NewSessionRequest())!
+        try await chat.loadDraftOptionsForProbe()
+        check(legacy.folder?.path == "/b/worktree" && chat.folder == nil,
+              "actual draft loader preserves legacy ID-only and folderless requests")
         let savedPending = ownerB.model.pendingNewSession
         fa.folders = [folder(7, "/moved")]
         await ownerA.projectCatalog.refresh(force: true)
         merged.openExistingSession(rowA.reference); merged.openProject(at: rootA); merged.openNewSession(at: rootA)
         check(merged.selectedServerID == b.id && ownerB.model.pendingNewSession == savedPending,
               "captured session/Open Folder/New Task reject path reuse")
-        fb.folders = [folder(7, "/b/moved")]
-        await ownerB.activity.refresh(client: ownerB.client)
-        ownerB.model.selectedConversationID = nil
-        merged.openExistingSession(rowB.reference)
-        check(ownerB.model.selectedConversationID == nil && merged.owner(of: rowB.reference.location) === ownerB,
-              "captured row rejects mismatched Activity path before independent catalog refresh")
+        for changed in [[folder(7, "/b/moved"), folder(9, "/b/moved-worktree", parent: 7)], []] {
+            fb.folders = changed
+            await ownerB.activity.refresh(client: ownerB.client)
+            merged.selectedServerID = a.id
+            ownerB.model.selectedConversationID = nil
+            let content = ownerB.model.contentPath, draftRequest = ownerB.model.pendingNewSession
+            merged.openExistingSession(rowB.reference)
+            merged.openProject(at: rowB.reference.location); merged.openNewSession(at: rowB.reference.location)
+            merged.openProject(at: worktreeB); merged.openNewSession(at: worktreeB)
+            check(merged.selectedServerID == a.id && ownerB.model.selectedConversationID == nil
+                  && ownerB.model.contentPath == content && ownerB.model.pendingNewSession == draftRequest
+                  && merged.owner(of: rowB.reference.location) == nil && merged.owner(of: worktreeB) == nil,
+                  "Activity-only move/removal fences existing/new/folder/worktree actions with unchanged catalog")
+        }
         check(!merged.hasLoadedHistory(for: project), "changed Activity path cannot produce No Sessions Yet")
+        fb.folders = [folder(7, "/b/repo"), folder(9, "/b/worktree", parent: 7)]
+        fb.failFolders = true; fb.failOpenFolders = true
+        await ownerB.projectCatalog.refresh(force: true)
+        check(merged.owner(of: worktreeB) == nil,
+              "failed catalog reads cannot renew old paths over successful Activity removal")
+        fb.failFolders = false; fb.failOpenFolders = false
+        await ownerB.projectCatalog.refresh(force: true)
+        check(merged.owner(of: rowB.reference.location) === ownerB && merged.owner(of: worktreeB) === ownerB
+              && merged.history(for: project).filter { $0.reference.location.serverID == b.id }.count == 2,
+              "newer successful catalog recovers locations/history despite older Activity removal")
+        fb.failFolders = true; fb.failOpenFolders = true
+        let recoveredProbes = fb.identityReads
+        await ownerB.activity.refresh(client: ownerB.client)
+        check(merged.owner(of: worktreeB) === ownerB && fb.identityReads == recoveredProbes,
+              "failed Activity inventory cannot renew older removal or trigger Git probes")
+        fb.failFolders = false; fb.failOpenFolders = false
+        // An older Activity read may publish after a newer catalog due to history latency.
+        fb.folders = []; fb.holdHistory = true
+        let delayed = Task { await ownerB.activity.refresh(client: ownerB.client) }
+        for _ in 0..<1000 where fb.historyContinuation == nil { try await Task.sleep(for: .milliseconds(1)) }
+        check(fb.historyContinuation != nil, "older Activity inventory held behind conversations")
+        fb.folders = [folder(7, "/b/repo"), folder(9, "/b/worktree", parent: 7)]
+        await ownerB.projectCatalog.refresh(force: true)
+        fb.historyContinuation!.resume(); fb.historyContinuation = nil; fb.holdHistory = false
+        await delayed.value
+        check(ownerB.activity.folders.isEmpty && merged.owner(of: worktreeB) === ownerB
+              && merged.history(for: project).filter { $0.reference.location.serverID == b.id }.count == 2,
+              "delayed older Activity success never vetoes a newer catalog read")
         fb.folders = [folder(7, "/b/repo"), folder(9, "/b/worktree", parent: 7)]
         fb.conversations = []; await ownerB.activity.refresh(client: ownerB.client)
         ownerB.model.selectedConversationID = nil
@@ -319,6 +425,7 @@ import Foundation
               && merged.workspace(for: a.id)!.model.pendingNewSession == nil,
               "retirement/replacement reject captured actions without touching replacement")
         print("\(passed) portable architecture invariants passed; native recovery/UI not executed")
+        precondition(failed == 0, "\(failed) portable architecture invariants failed")
     }
 }
 '''
@@ -372,7 +479,9 @@ def main():
         (path / "Snapshot.swift").write_text("import Foundation\nstruct ServerSnapshotLoad {" + snapshot.split("extension CodegClient {", 1)[0])
         resolution = (ROOT / "CodegiOS/Models/GitHistory.swift").read_text().split("struct WorktreeResolution:", 1)[1].split("/// A configured git remote", 1)[0]
         (path / "Resolution.swift").write_text("import Foundation\nstruct WorktreeResolution:" + resolution)
-        (path / "Stubs.swift").write_text(STUBS)
+        detail = (ROOT / "CodegiOS/Features/SessionDetail/SessionDetailViewModel.swift").read_text()
+        loader = "    private func loadDraftOptions(" + detail.split("    private func loadDraftOptions(", 1)[1].split("    // MARK: - Academic", 1)[0]
+        (path / "Stubs.swift").write_text(STUBS.replace("    // PRODUCTION_DRAFT_LOADER", loader))
         (path / "Probe.swift").write_text(PROBE)
         files = sorted(p.name for p in path.glob("*.swift"))
         subprocess.run([
@@ -380,7 +489,7 @@ def main():
             "swiftc", "-swift-version", "5", "-parse-as-library", *files, "-o", "probe",
         ], check=True)
         subprocess.run([
-            "docker", "run", "--rm", "--network", "none", "-v", f"{path}:/probe", "-w", "/probe", IMAGE, "./probe",
+            "docker", "run", "--rm", "--network", "none", "-v", f"{path}:/probe", "-w", "/probe", IMAGE, "stdbuf", "-oL", "./probe",
         ], check=True)
 
 

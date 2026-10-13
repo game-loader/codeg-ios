@@ -76,19 +76,24 @@ enum Route: Hashable {
     case newSession(NewSessionRequest)
 }
 
-/// A draft new-task token. Carries only an optional preselected folder (e.g.
+/// A draft new-task token. Carries an optional preselected folder (e.g.
 /// when launched from a project); the agent/folder/first message are all chosen
 /// on the session screen itself, so this is just a stable identity for the
 /// pushed/pending draft.
 struct NewSessionRequest: Hashable, Identifiable {
     let id: UUID
     var preselectedFolderID: Int?
+    /// Exact destination captured by a project action. Nil keeps legacy ID-only
+    /// requests and folderless Chats compatible.
+    var preselectedFolderPath: String?
     /// A conversation about an Academic paper.
     var academic: AcademicDraft?
 
-    init(id: UUID = UUID(), preselectedFolderID: Int? = nil, academic: AcademicDraft? = nil) {
+    init(id: UUID = UUID(), preselectedFolderID: Int? = nil, preselectedFolderPath: String? = nil,
+         academic: AcademicDraft? = nil) {
         self.id = id
         self.preselectedFolderID = preselectedFolderID
+        self.preselectedFolderPath = preselectedFolderPath
         self.academic = academic
     }
 }

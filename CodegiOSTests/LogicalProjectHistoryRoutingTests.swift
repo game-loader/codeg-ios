@@ -98,6 +98,7 @@ final class LogicalProjectHistoryRoutingTests: XCTestCase {
         XCTAssertNil(ownerB.model.pendingNewSession)
         registry.openNewSession(at: worktree.reference)
         XCTAssertEqual(ownerB.model.pendingNewSession?.preselectedFolderID, 9)
+        XCTAssertEqual(ownerB.model.pendingNewSession?.preselectedFolderPath, worktree.folder.path)
         XCTAssertTrue(ownerA.session(request: draftRequest) === draft)
         XCTAssertEqual(draft.draft, "folderless unsent")
         XCTAssertNil(draft.newRequest?.preselectedFolderID)
@@ -112,7 +113,7 @@ final class LogicalProjectHistoryRoutingTests: XCTestCase {
         a.server.setFolders([WorktreeTestServer.folder("/activity-moved", id: 7)])
         try queueHistory(a, rows: [conversation()])
         await ownerA.activity.refresh(client: ownerA.client)
-        XCTAssertTrue(registry.owner(of: row.reference.location) === ownerA, "catalog has not refreshed yet")
+        XCTAssertNil(registry.owner(of: row.reference.location), "newer Activity invalidates the unchanged catalog path")
         registry.openExistingSession(row.reference)
         XCTAssertEqual(registry.selectedServerID, ownerB.server.id, "mismatched Activity path cannot dispatch")
         try queueHistory(a, rows: [])
@@ -139,6 +140,153 @@ final class LogicalProjectHistoryRoutingTests: XCTestCase {
         XCTAssertTrue(replacement.model.contentPath.isEmpty)
         XCTAssertNil(replacement.model.pendingNewSession)
         XCTAssertEqual(registry.selectedServerID, ownerB.server.id)
+    }
+
+    func testActivityOnlyMoveAndRemovalRejectEveryCapturedRootAndWorktreeAction() async throws {
+        try await loadHistories()
+        let project = try XCTUnwrap(registry.logicalProjects.first)
+        let captured = registry.history(for: project).filter { $0.reference.location.serverID == ownerA.server.id }
+        XCTAssertEqual(captured.count, 2)
+        let sheets = captured.map { row in
+            WorktreeListViewModel(client: ownerA.client!, folder: row.folder,
+                isCurrent: { [registry = registry!, owner = ownerA!] in registry.owner(of: row.reference.location) === owner })
+        }
+        for sheet in sheets {
+            await sheet.load()
+            XCTAssertTrue(sheet.allowsPresentation)
+            XCTAssertTrue(sheet.canCreate)
+        }
+        let probes = a.server.count("list_repository_project_identities")
+        for folders in [[WorktreeTestServer.folder("/moved", id: 7),
+                         WorktreeTestServer.folder("/moved-linked", id: 9, parent: 7)], []] {
+            a.server.setFolders(folders)
+            try queueHistory(a, rows: [conversation(), conversation(43, folder: 9)])
+            await ownerA.activity.refresh(client: ownerA.client)
+            registry.selectedServerID = ownerB.server.id
+            for row in captured {
+                XCTAssertNil(registry.owner(of: row.reference.location), "also fences the worktree sheet's isCurrent callback")
+                registry.openExistingSession(row.reference)
+                registry.openProject(at: row.reference.location)
+                registry.openNewSession(at: row.reference.location)
+            }
+            XCTAssertEqual(registry.selectedServerID, ownerB.server.id)
+            XCTAssertTrue(ownerA.model.contentPath.isEmpty)
+            XCTAssertNil(ownerA.model.pendingNewSession)
+            for sheet in sheets {
+                XCTAssertFalse(sheet.allowsPresentation)
+                XCTAssertFalse(sheet.canCreate)
+                await sheet.create(branchName: "blocked", worktreePath: "/blocked")
+            }
+            XCTAssertEqual(registry.history(for: project).count, 2, "only the healthy owner contributes")
+            XCTAssertEqual(ownerA.projectCatalog.folder(id: 7)?.path, "/repo", "catalog remains unchanged")
+        }
+        XCTAssertEqual(a.server.count("list_repository_project_identities"), probes)
+        XCTAssertEqual(a.server.count("git_add_worktree"), 0)
+        XCTAssertTrue(a.server.unexpected.isEmpty && b.server.unexpected.isEmpty)
+    }
+
+    func testFreshCatalogRecoversFromOlderActivityMoveAndRemoval() async throws {
+        try await loadHistories()
+        for folders in [[WorktreeTestServer.folder("/activity-moved", id: 7)], []] {
+            a.server.setFolders(folders)
+            try queueHistory(a, rows: [conversation(), conversation(43, folder: 9)])
+            await ownerA.activity.refresh(client: ownerA.client)
+            try await catalog(a, owner: ownerA)
+            let project = try XCTUnwrap(registry.logicalProjects.first)
+            let rows = registry.history(for: project).filter { $0.reference.location.serverID == ownerA.server.id }
+            XCTAssertEqual(rows.count, 2, "older Activity must not veto a fresh full catalog")
+            XCTAssertTrue(registry.hasLoadedHistory(for: project))
+            for location in LogicalProjectHistory.locations(for: project).filter({ $0.reference.serverID == ownerA.server.id }) {
+                XCTAssertTrue(registry.owner(of: location.reference) === ownerA)
+                registry.openProject(at: location.reference)
+                registry.openNewSession(at: location.reference)
+                XCTAssertEqual(ownerA.model.pendingNewSession?.preselectedFolderPath, location.folder.path)
+            }
+            registry.selectedServerID = ownerB.server.id
+            registry.openExistingSession(try XCTUnwrap(rows.first).reference)
+            XCTAssertEqual(registry.selectedServerID, ownerA.server.id)
+        }
+        XCTAssertTrue(a.server.unexpected.isEmpty && b.server.unexpected.isEmpty)
+    }
+
+    func testDelayedOlderActivityPublicationCannotVetoNewerCatalogRead() async throws {
+        let gate = WorktreeTestGate()
+        a.server.setFolders([])
+        try queueHistory(a, rows: [conversation(), conversation(43, folder: 9)], gate: gate)
+        let pending = Task { await self.ownerA.activity.refresh(client: self.ownerA.client) }
+        defer { gate.release() }
+        for _ in 0..<1000 where !gate.hasRequest { try await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertTrue(gate.hasRequest)
+        // Ensure the older full inventory has completed before restoring it.
+        for _ in 0..<1000 where a.server.count("list_all_folder_details") < 2 { try await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertEqual(a.server.count("list_all_folder_details"), 2)
+        try await catalog(a, owner: ownerA)
+        gate.release(); await pending.value
+        XCTAssertTrue(ownerA.activity.hasLoadedFolders)
+        XCTAssertTrue(ownerA.activity.folders.isEmpty)
+        let project = try XCTUnwrap(registry.logicalProjects.first)
+        XCTAssertEqual(registry.history(for: project).count, 2)
+        XCTAssertTrue(registry.owner(of: project.setups[0].reference) === ownerA)
+        XCTAssertTrue(a.server.unexpected.isEmpty)
+    }
+
+    func testValidNewTaskClickThenAsyncMoveOrRemovalRejectsDraftAndConnection() async throws {
+        let reference = try XCTUnwrap(registry.logicalProjects.first?.setups.first?.reference)
+        for folders in [[WorktreeTestServer.folder("/moved", id: 7)], []] {
+            registry.openNewSession(at: reference)
+            let request = try XCTUnwrap(ownerA.model.pendingNewSession)
+            XCTAssertEqual(request.preselectedFolderPath, "/repo")
+            let draft = try XCTUnwrap(ownerA.session(request: request))
+            let gate = WorktreeTestGate()
+            // A stale open result cannot resurrect a successful full removal.
+            a.server.enqueue("list_open_folder_details", .init(data: try WorktreeTestReply.json([WorktreeTestServer.folder("/repo", id: 7)])))
+            a.server.enqueue("list_all_folder_details", .init(data: try WorktreeTestReply.json(folders), gate: gate))
+            a.server.enqueue("acp_list_agents", .init(data: Data("[]".utf8)))
+            let pending = Task { await draft.load() }
+            defer { gate.release() }
+            for _ in 0..<1000 where !gate.hasRequest { try await Task.sleep(for: .milliseconds(1)) }
+            XCTAssertTrue(gate.hasRequest)
+            XCTAssertEqual(draft.phase, .loading)
+            gate.release(); await pending.value
+            if case .failed = draft.phase {} else { XCTFail("captured path was accepted after it moved or disappeared") }
+            XCTAssertNil(draft.folder)
+            draft.draft = "keep this unsent"
+            draft.send()
+            do { _ = try await draft.resolveConnectionForOptions(); XCTFail("failed draft accepted a connection") } catch {}
+            XCTAssertEqual(draft.draft, "keep this unsent")
+        }
+        for route in ["acp_connect", "create_conversation", "create_chat_dir", "acp_prompt"] {
+            XCTAssertEqual(a.server.count(route), 0)
+        }
+        XCTAssertTrue(a.server.unexpected.isEmpty)
+    }
+
+    func testExactCapturedWorktreeDraftAndLegacyIDOnlyAndFolderlessRequestsLoad() async throws {
+        let project = try XCTUnwrap(registry.logicalProjects.first)
+        let location = try XCTUnwrap(LogicalProjectHistory.locations(for: project).first {
+            $0.reference.serverID == ownerA.server.id && $0.folder.id == 9
+        })
+        registry.openNewSession(at: location.reference)
+        let captured = try XCTUnwrap(ownerA.model.pendingNewSession)
+        let cases: [(NewSessionRequest, [String: Any], String?)] = [
+            (captured, WorktreeTestServer.folder(location.folder.path, id: 9, parent: 7), location.folder.path),
+            (NewSessionRequest(preselectedFolderID: 7), WorktreeTestServer.folder("/legacy-moved", id: 7), "/legacy-moved"),
+            (NewSessionRequest(), WorktreeTestServer.folder("/available", id: 7), nil)
+        ]
+        for (request, folder, expected) in cases {
+            a.server.setFolders([folder])
+            a.server.enqueue("list_open_folder_details", .init(data: try WorktreeTestReply.json([folder])))
+            a.server.enqueue("acp_list_agents", .init(data: Data("[]".utf8)))
+            let draft = try XCTUnwrap(ownerA.session(request: request))
+            await draft.load()
+            XCTAssertEqual(draft.phase, .loaded)
+            XCTAssertEqual(draft.folder?.path, expected)
+            XCTAssertEqual(draft.newRequest, request)
+            XCTAssertTrue(ownerA.session(request: request) === draft)
+        }
+        XCTAssertEqual(a.server.count("acp_connect"), 0)
+        XCTAssertEqual(a.server.count("create_conversation"), 0)
+        XCTAssertTrue(a.server.unexpected.isEmpty)
     }
 
     func testConversationSuccessWithFailedActivityInventoryUsesIndependentCatalog() async throws {

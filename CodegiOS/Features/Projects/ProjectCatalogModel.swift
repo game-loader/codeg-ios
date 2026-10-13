@@ -34,6 +34,8 @@ final class ProjectCatalogModel {
     private(set) var identityIssue: ProjectCatalogIssue?
     private(set) var isLoading = false
     private(set) var hasLoaded = false
+    private(set) var foldersReadOrder: UInt64 = 0
+    private(set) var openFoldersReadOrder: UInt64 = 0
     private var foldersLoaded = false
     private var openFoldersLoaded = false
     private var foldersSequence = 0
@@ -96,8 +98,9 @@ final class ProjectCatalogModel {
         inFlight?.cancel()
         sequence += 1
         let token = sequence
+        let readOrder = FolderInventoryReadOrder.next()
         isLoading = true
-        let task = Task { await self.load(token: token, reprobe: force) }
+        let task = Task { await self.load(token: token, readOrder: readOrder, reprobe: force) }
         inFlight = task
         await task.value
         guard accepts(token) else { return }
@@ -116,6 +119,7 @@ final class ProjectCatalogModel {
         isLoading = false; hasLoaded = false
         foldersLoaded = false; openFoldersLoaded = false; hasAttempted = false
         foldersSequence = 0; openFoldersSequence = 0
+        foldersReadOrder = 0; openFoldersReadOrder = 0
     }
 
     private func accepts(_ token: Int) -> Bool {
@@ -130,7 +134,7 @@ final class ProjectCatalogModel {
         do { return .success(try await operation()) } catch { return .failure(error) }
     }
 
-    private func load(token: Int, reprobe: Bool) async {
+    private func load(token: Int, readOrder: UInt64, reprobe: Bool) async {
         var folderFailed = false
         await withTaskGroup(of: FolderResult.self) { group in
             group.addTask { .all(await Self.result(self.loadFolders)) }
@@ -140,8 +144,10 @@ final class ProjectCatalogModel {
                 switch outcome {
                 case .all(.success(let rows)):
                     folders = rows; foldersLoaded = true; hasLoaded = true; foldersSequence = token
+                    foldersReadOrder = readOrder
                 case .open(.success(let rows)):
                     openFolders = rows; openFoldersLoaded = true; hasLoaded = true; openFoldersSequence = token
+                    openFoldersReadOrder = readOrder
                 case .all(.failure), .open(.failure): folderFailed = true
                 }
                 pruneIdentities()

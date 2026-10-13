@@ -196,20 +196,36 @@ final class ServerWorkspaceRegistry {
     /// Resolve the captured owner and exact path before dispatching a row action.
     func owner(of reference: ProjectSetupReference) -> ServerWorkspace? {
         guard let owner = workspace(for: reference.serverID), !owner.isRetired,
-              reference.matches(owner.projectCatalog.snapshot(serverID: owner.server.id,
-                  configurationRevision: owner.server.configurationRevision)) else { return nil }
+              reference.configurationRevision == owner.server.configurationRevision,
+              reference.generationID == owner.id,
+              currentFolders(on: owner).contains(where: {
+                  $0.id == reference.folderID && $0.path == reference.path && $0.kind == .regular
+              }) else { return nil }
         return owner
     }
 
     func history(for project: LogicalProject) -> [LogicalProjectSession] {
         LogicalProjectHistory.sessions(for: project, snapshots: workspaces.filter { !$0.isRetired }.map {
             ProjectHistorySnapshot(serverID: $0.server.id, configurationRevision: $0.server.configurationRevision,
-                                   generationID: $0.id, folders: historyFolders(on: $0), conversations: $0.activity.conversations)
+                                   generationID: $0.id, folders: currentFolders(on: $0), conversations: $0.activity.conversations)
         })
     }
 
-    private func historyFolders(on owner: ServerWorkspace) -> [FolderDetail] {
-        owner.activity.hasLoadedFolders ? owner.activity.folders : owner.projectCatalog.catalogFolders
+    /// The newest successful full inventory establishes absence as well as
+    /// paths. Newer open inventories can add/update rows, but omission from an
+    /// open list means closed, not removed. Failed reads retain prior authority.
+    private func currentFolders(on owner: ServerWorkspace) -> [FolderDetail] {
+        let catalog = owner.projectCatalog, activity = owner.activity
+        let fullOrder = max(catalog.foldersReadOrder, activity.foldersReadOrder)
+        var folders = activity.foldersReadOrder > catalog.foldersReadOrder ? activity.folders : catalog.folders
+        let opened = [(catalog.openFoldersReadOrder, catalog.openFolders),
+                      (activity.openFoldersReadOrder, activity.openFolders)]
+        for (order, rows) in opened.sorted(by: { $0.0 < $1.0 }) where order > fullOrder {
+            let byID = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            let known = Set(folders.map(\.id))
+            folders = folders.map { byID[$0.id] ?? $0 } + rows.filter { !known.contains($0.id) }
+        }
+        return folders
     }
 
     /// Empty history is authoritative only after every contributing location
@@ -219,9 +235,7 @@ final class ServerWorkspaceRegistry {
         return !locations.isEmpty && locations.allSatisfy { location in
             guard let owner = owner(of: location.reference), owner.client != nil,
                   owner.activity.hasLoadedConversations, owner.activity.conversationsError == nil else { return false }
-            return historyFolders(on: owner).contains {
-                $0.id == location.reference.folderID && $0.path == location.reference.path && $0.kind == .regular
-            }
+            return true
         }
     }
 
@@ -234,13 +248,12 @@ final class ServerWorkspaceRegistry {
         guard let owner = owner(of: reference), owner.client != nil else { return }
         selectedServerID = owner.server.id
         owner.model.selectedTab = .projects
-        owner.model.open(.newSession(NewSessionRequest(preselectedFolderID: reference.folderID)))
+        owner.model.open(.newSession(NewSessionRequest(preselectedFolderID: reference.folderID,
+                                                      preselectedFolderPath: reference.path)))
     }
 
     func openExistingSession(_ reference: ProjectSessionReference) {
-        guard let owner = owner(of: reference.location), historyFolders(on: owner).contains(where: {
-            $0.id == reference.location.folderID && $0.path == reference.location.path && $0.kind == .regular
-        }), owner.activity.conversations.contains(where: {
+        guard let owner = owner(of: reference.location), owner.activity.conversations.contains(where: {
             $0.id == reference.conversationID && $0.folderId == reference.location.folderID
         }) else { return }
         openExistingSession(reference.conversationID, on: owner)

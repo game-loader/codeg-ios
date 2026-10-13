@@ -571,13 +571,20 @@ final class SessionDetailViewModel {
         }
 
         let open = (try? await openReq) ?? []
-        let all = (try? await allReq) ?? []
+        let fullInventory = try? await allReq
+        let all = fullInventory ?? []
         allFolders = all
         availableFolders = FolderVisibility.filterTopLevel(open).filter { $0.kind != .chat }
             .sorted { $0.lastOpenedAt > $1.lastOpenedAt }
         if !didSelectDraftFolder, !hasStartedFirstSend,
            newRequest?.academic?.chatMode != true, let preselectedFolderID {
-            guard let selected = (all + open).first(where: { $0.id == preselectedFolderID && $0.kind != .chat }) else {
+            let expectedPath = newRequest?.preselectedFolderPath
+            // A successful full inventory, including an empty one, is
+            // authoritative for a captured destination. Stale open rows cannot
+            // resurrect it. ID-only callers retain their existing fallback.
+            let inventory = expectedPath == nil ? all + open : (fullInventory ?? open)
+            guard let selected = inventory.first(where: { $0.id == preselectedFolderID && $0.kind != .chat }),
+                  expectedPath == nil || selected.path == expectedPath else {
                 throw APIError.transport(String(localized: "The selected folder couldn't be loaded. Try again."))
             }
             folder = selected
