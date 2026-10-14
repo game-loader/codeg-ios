@@ -284,6 +284,15 @@ final class SessionDetailViewModel {
     /// Bounded diagnostics from the live error or its snapshot counterpart.
     /// Kept separately from the user-facing reason and terminal lifecycle.
     private(set) var errorDetails: String?
+    /// Presentation owned by plain `error` events / `last_error`. An authoritative
+    /// snapshot can retire it without clearing typed failures or other notices.
+    private struct PlainErrorPresentation {
+        var liveTurnID: String?
+        var liveMessage: String?
+        var notice: String?
+        var streamError: String?
+    }
+    private var plainError = PlainErrorPresentation()
     /// The retry message currently in `notice`, so progress can clear exactly
     /// that notice without wiping an unrelated one the user hasn't read.
     private var retryNotice: String?
@@ -1232,6 +1241,7 @@ final class SessionDetailViewModel {
         retryNotice = nil
         lastStreamError = nil
         errorDetails = nil
+        plainError = PlainErrorPresentation()
         // The user's own send always re-pins, even if they'd scrolled up.
         requestStickToBottom()
 
@@ -1826,20 +1836,40 @@ final class SessionDetailViewModel {
         streamGeneration &+= 1
         let generation = streamGeneration
         let newStream = eventStreamFactory()
-        // Gives pre-snapshot failures the same bounded reconnect path as an
-        // established stream; previously those failures silently stranded it.
-        liveTurn = LiveTurn()
-        liveTurnFromReattach = true
-        isTurnActive = true
+        // Only a row that actually claims an active turn needs a visible
+        // placeholder and reconnects before its first snapshot. Idle history is
+        // a best-effort failure probe, not evidence that a turn is running.
+        let live = LiveTurn()
+        if serverSaysLive {
+            liveTurn = live
+            liveTurnFromReattach = true
+            isTurnActive = true
+        }
         streamReconnects = 0
         stream = newStream
         newStream.start()
-        if let live = liveTurn {
+        if serverSaysLive {
             armRecoveryTimeout(live: live, connectionID: conn, generation: generation)
+        } else {
+            recoveryTimeoutTask = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(12)) } catch { return }
+                self?.releaseIdleProbe(connectionID: conn, generation: generation,
+                                       recoveryGeneration: recoveryGeneration)
+            }
         }
         consumerTask = Task { [weak self] in
-            await self?.consumeReattach(stream: newStream, connectionID: conn, generation: generation, serverSaysLive: serverSaysLive)
+            await self?.consumeReattach(stream: newStream, connectionID: conn, live: live,
+                                        generation: generation, recoveryGeneration: recoveryGeneration,
+                                        serverSaysLive: serverSaysLive)
         }
+    }
+
+    private func releaseIdleProbe(connectionID conn: String, generation: Int, recoveryGeneration: Int) {
+        guard (try? client.checkBinding()) != nil,
+              recoveryGeneration == resumeGeneration, generation == streamGeneration,
+              connectionID == conn, liveTurn == nil, !isTurnActive else { return }
+        closeStream()
+        connectionID = nil
     }
 
     /// The server reported a live turn at load but we couldn't attach to it (it
@@ -1864,18 +1894,23 @@ final class SessionDetailViewModel {
     /// continuation to release and it BUILDS the live turn from the attach snapshot
     /// rather than being handed one. If the snapshot shows nothing in flight, it
     /// closes the stream (idle connection — leave it alone).
-    private func consumeReattach(stream: any SessionEventStream, connectionID conn: String, generation: Int, serverSaysLive: Bool = false) async {
-        let live = liveTurn
+    private func consumeReattach(stream: any SessionEventStream, connectionID conn: String, live: LiveTurn,
+                                 generation: Int, recoveryGeneration: Int, serverSaysLive: Bool = false) async {
+        var awaitingIdleProbe = !serverSaysLive
         for await frame in stream.frames {
             guard (try? client.checkBinding()) != nil, connectionID == conn else { return }
             // A send (or another reattach) superseded us — let go; the new stream owns the turn.
-            guard generation == streamGeneration else { return }
+            guard generation == streamGeneration,
+                  !awaitingIdleProbe || recoveryGeneration == resumeGeneration else { return }
             switch frame {
             case .ready:
                 stream.attach(subscriptionId: subscriptionID, connectionId: conn, sinceSeq: nil)
             case .snapshot(let snap):
                 guard snap.connectionId == nil || snap.connectionId == conn else { continue }
-                guard let currentLive = live else { return }
+                let currentLive = live
+                awaitingIdleProbe = false
+                liveTurn = currentLive
+                isTurnActive = true
                 restoreFeedback(from: snap, connectionID: conn)
                 recoveryTimeoutTask?.cancel()
                 // A snapshot means the socket is healthy — reset the reconnect budget.
@@ -1914,23 +1949,23 @@ final class SessionDetailViewModel {
                     return
                 }
             case .replay(let events):
+                guard !awaitingIdleProbe else { continue }
                 recoveryTimeoutTask?.cancel()
-                if let live {
-                    for env in events {
-                        guard generation == streamGeneration, isTurnActive else { break }
-                        if env.connectionId == conn { handle(event: env.event, live: live) }
-                    }
+                for env in events {
+                    guard generation == streamGeneration, isTurnActive else { break }
+                    if env.connectionId == conn { handle(event: env.event, live: live) }
                 }
             case .pong:
                 break
             case .event(let envelope):
                 // The attach snapshot always precedes events, so `live` is set by now.
-                if let live, envelope.connectionId == conn { handle(event: envelope.event, live: live) }
+                if !awaitingIdleProbe, envelope.connectionId == conn { handle(event: envelope.event, live: live) }
             case .detached(let reason):
-                // Pre-snapshot drops have nothing on screen — stay quiet. Once a
-                // turn is live, recover transient detaches silently (web parity);
-                // only `connection_gone` reconciles/fails.
-                guard isTurnActive, let live else { return }
+                if awaitingIdleProbe {
+                    releaseIdleProbe(connectionID: conn, generation: generation, recoveryGeneration: recoveryGeneration)
+                    return
+                }
+                guard isTurnActive else { return }
                 if reason == "connection_gone" {
                     Task { [weak self] in await self?.reconcileOrFail(live: live, reason: reason) }
                 } else {
@@ -1938,13 +1973,18 @@ final class SessionDetailViewModel {
                 }
                 return
             case .closed(let reason):
-                // A socket drop while a turn is live is a transport blip — re-attach
-                // silently. (Before the snapshot there's nothing to recover.)
-                if isTurnActive, let live {
+                if awaitingIdleProbe {
+                    releaseIdleProbe(connectionID: conn, generation: generation, recoveryGeneration: recoveryGeneration)
+                    return
+                }
+                if isTurnActive {
                     reconnectStream(into: live, connectionID: conn, reason: reason)
                 }
                 return
             }
+        }
+        if awaitingIdleProbe {
+            releaseIdleProbe(connectionID: conn, generation: generation, recoveryGeneration: recoveryGeneration)
         }
     }
 
@@ -2135,7 +2175,10 @@ final class SessionDetailViewModel {
             // Warnings and errors are worth a banner; info-level notices are
             // chatter on a phone.
             let title = sessionNotice.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            if sessionNotice.severity != "info", !title.isEmpty { notice = title }
+            if sessionNotice.severity != "info", !title.isEmpty {
+                notice = title
+                plainError.notice = nil
+            }
 
         case .sessionLoadFailed(_, let code):
             // The server follows this with `status_changed` error, which ends the
@@ -2143,7 +2186,13 @@ final class SessionDetailViewModel {
             let reason = code == "session_archived"
                 ? String(localized: "This session is archived in the agent. Unarchive it there, or start a new session.")
                 : String(localized: "The agent couldn't restore this session. Start a new session to continue.")
-            if isTurnActive { lastStreamError = reason } else { notice = reason }
+            if isTurnActive {
+                lastStreamError = reason
+                plainError.streamError = nil
+            } else {
+                notice = reason
+                plainError.notice = nil
+            }
 
         case .conversationLinked(let linkedID, _):
             adoptLinkedConversation(linkedID)
@@ -2204,17 +2253,24 @@ final class SessionDetailViewModel {
             // The answer to something the user just did (or a note that the
             // agent started over instead of resuming): tell them, nothing more.
             notice = message
+            plainError.notice = message
         default:
             if code.hasPrefix("turn_failed_") {
                 // codeg's verdict on a turn that ended badly; `turn_complete`
                 // follows. A typed failure the adapter already reported for this
                 // turn is the better explanation, so it wins.
-                if live.errorMessage == nil { live.errorMessage = message }
+                if live.errorMessage == nil {
+                    live.errorMessage = message
+                    plainError.liveTurnID = live.id
+                    plainError.liveMessage = message
+                }
             } else {
                 // A session-level problem. If the connection dies next, this is
                 // the reason reported for the turn.
                 lastStreamError = message
                 notice = message
+                plainError.streamError = message
+                plainError.notice = message
             }
         }
     }
@@ -2254,14 +2310,18 @@ final class SessionDetailViewModel {
             showRetryNotice(record.displayText)
         } else if record.severity == "warning" {
             notice = record.displayText
+            plainError.notice = nil
         } else {
             clearRetryNotice()
             if isTurnActive {
-                if live.errorMessage == nil || live.errorMessage == previous?.fullText {
+                if live.errorMessage == nil || live.errorMessage == previous?.fullText
+                    || (plainError.liveTurnID == live.id && live.errorMessage == plainError.liveMessage) {
                     live.errorMessage = record.fullText
+                    plainError.liveMessage = nil
                 }
             } else {
                 notice = record.displayText
+                plainError.notice = nil
             }
         }
     }
@@ -2281,9 +2341,19 @@ final class SessionDetailViewModel {
         failureConnectionID = conn
         lastStreamError = nil
         errorDetails = nil
+        plainError = PlainErrorPresentation()
     }
 
     private func restoreFailures(from snap: LiveSessionSnapshot, live: LiveTurn) {
+        // Prompting clears last_error on the server. Replace only the previous
+        // plain error's presentation before applying this authoritative snapshot.
+        if plainError.liveTurnID == live.id, live.errorMessage == plainError.liveMessage {
+            live.errorMessage = nil
+        }
+        if let shown = plainError.notice, notice == shown { notice = nil }
+        if let reason = plainError.streamError, lastStreamError == reason { lastStreamError = nil }
+        errorDetails = nil
+        plainError = PlainErrorPresentation()
         for record in snap.sessionFailures { applySessionFailure(record, live: live, fromSnapshot: true) }
         if let error = snap.lastError {
             handleStreamError(message: error.message, code: error.code, details: error.details, live: live)
@@ -2298,7 +2368,8 @@ final class SessionDetailViewModel {
             failLive(live, message: live.errorMessage ?? lastStreamError ?? (snap.status == .error
                 ? String(localized: "The agent connection errored.")
                 : String(localized: "The agent disconnected.")))
-            if let message = live.errorMessage, Self.hasPersistedFailure(message, in: turns) {
+            if let message = live.errorMessage,
+               Self.hasPersistedFailure(message, in: turns, promptPending: !pendingUserTurns.isEmpty) {
                 live.errorMessage = nil
                 if !live.hasContent {
                     liveTurn = nil
@@ -2310,7 +2381,9 @@ final class SessionDetailViewModel {
             let failed = live.errorMessage != nil
             if let message = live.errorMessage {
                 if notice == message { notice = nil }
-                if Self.hasPersistedFailure(message, in: turns) { live.errorMessage = nil }
+                if Self.hasPersistedFailure(message, in: turns, promptPending: !pendingUserTurns.isEmpty) {
+                    live.errorMessage = nil
+                }
             }
             finalize(live: live, stopReason: failed ? "error" : "end_turn")
         }
@@ -2321,6 +2394,7 @@ final class SessionDetailViewModel {
     private func showRetryNotice(_ text: String) {
         retryNotice = text
         notice = text
+        plainError.notice = nil
     }
 
     private func clearRetryNotice() {
@@ -2711,9 +2785,14 @@ final class SessionDetailViewModel {
                 let advanced = transcriptAdvanced(detail.turns, from: baselineTurns)
 
                 if advanced, !mustPreserveReply || Self.transcriptHasReply(detail.turns) {
+                    // A transcript can advance before the optimistic prompt is
+                    // persisted. Its previous prompt cannot own this failure.
+                    let promptPending = !pendingUserTurns.isEmpty
+                        && detail.turns.last(where: { $0.role == .user })?.id
+                            == baselineTurns.last(where: { $0.role == .user })?.id
                     turns = detail.turns
-                    pendingUserTurns.removeAll()
-                    liveTurn = Self.errorOnlyTurn(from: live, persistedTurns: turns)
+                    if !promptPending { pendingUserTurns.removeAll() }
+                    liveTurn = Self.errorOnlyTurn(from: live, persistedTurns: turns, promptPending: promptPending)
                     // An error-only turn carries no reply, so it must not hide the
                     // persisted one just adopted (the reattach suppression).
                     liveTurnFromReattach = false
@@ -2779,9 +2858,10 @@ final class SessionDetailViewModel {
 
     /// Keep an unpersisted failure visible after reconciliation as a finalized,
     /// content-free live turn. A matching persisted failure owns its own row.
-    private static func errorOnlyTurn(from live: LiveTurn, persistedTurns: [MessageTurn]) -> LiveTurn? {
+    private static func errorOnlyTurn(from live: LiveTurn, persistedTurns: [MessageTurn],
+                                      promptPending: Bool = false) -> LiveTurn? {
         guard let message = live.errorMessage,
-              !hasPersistedFailure(message, in: persistedTurns) else { return nil }
+              !hasPersistedFailure(message, in: persistedTurns, promptPending: promptPending) else { return nil }
         let holder = LiveTurn()
         holder.errorMessage = message
         holder.stopReason = live.stopReason
@@ -2791,7 +2871,9 @@ final class SessionDetailViewModel {
 
     /// Match only the current prompt's persisted failure and exact wire text.
     /// An older turn with the same message cannot suppress a new failure.
-    private static func hasPersistedFailure(_ message: String, in turns: [MessageTurn]) -> Bool {
+    private static func hasPersistedFailure(_ message: String, in turns: [MessageTurn],
+                                            promptPending: Bool = false) -> Bool {
+        guard !promptPending else { return false }
         let start = turns.lastIndex(where: { $0.role == .user }).map { $0 + 1 } ?? 0
         return turns.dropFirst(start).contains { turn in
             turn.blocks.contains { block in

@@ -305,6 +305,351 @@ final class SessionFailureSnapshotTests: XCTestCase {
         XCTAssertEqual(live.errorMessage, "Empty reply")
     }
 
+    private func assertNewPromptRetiresPlainError(code: String?, throughResume: Bool) async throws {
+        let h = try RecoveryHarness()
+        defer { finish(h) }
+        h.server.setDetail(text: "Previous partial", status: "in_progress")
+        h.server.setConnected(true)
+        var error = ["message": "Previous failure", "details": "Previous diagnostic"]
+        if let code { error["code"] = code }
+        h.nextSnapshot = try snapshot(text: "Previous partial", lastError: error)
+        await h.model.load()
+        try await eventually("The old snapshot hydrates its plain error") {
+            h.model.errorDetails == "Previous diagnostic"
+                && (h.model.liveTurn?.errorMessage == "Previous failure" || h.model.notice == "Previous failure")
+        }
+        let live = try XCTUnwrap(h.model.liveTurn)
+        let fresh = try snapshot(text: "New prompt reply")
+        if throughResume {
+            h.nextSnapshot = fresh
+            await h.model.resume()
+        } else {
+            try XCTUnwrap(h.streams.last).emit(.snapshot(fresh))
+        }
+        try await eventually("Authoritative absence retires the previous plain presentation") {
+            h.liveText == "New prompt reply" && h.model.errorDetails == nil
+        }
+        XCTAssertTrue(h.model.liveTurn === live)
+        XCTAssertNil(live.errorMessage)
+        XCTAssertNil(h.model.notice)
+        XCTAssertTrue(h.model.isInFlight)
+        let stream = try XCTUnwrap(h.streams.last)
+        stream.emit(try RecoveryFixtures.event("error", fields: ["message": "Current prompt failure", "code": "turn_failed_empty"]))
+        try await drain(stream, h: h, token: 53)
+        XCTAssertEqual(live.errorMessage, "Current prompt failure")
+        stream.emit(.snapshot(fresh))
+        try await drain(stream, h: h, token: 54)
+        XCTAssertNil(live.errorMessage)
+        if code != nil {
+            stream.emit(try RecoveryFixtures.event("turn_complete", fields: ["stop_reason": "end_turn"]))
+        } else {
+            // The missed-completion path must not turn the old session-level
+            // error into this prompt's failure through lastStreamError.
+            stream.emit(.snapshot(try snapshot()))
+        }
+        try await eventually("The new prompt settles successfully") { !h.model.isInFlight }
+        XCTAssertEqual(live.stopReason, "end_turn")
+        XCTAssertNil(live.errorMessage)
+        XCTAssertNil(h.model.errorDetails)
+        XCTAssertNil(h.model.notice)
+    }
+
+    func testSameConnectionNewPromptClearsPlainFailureAndDiagnosticsOnResume() async throws {
+        try await assertNewPromptRetiresPlainError(code: "turn_failed_empty", throughResume: true)
+    }
+
+    func testSameConnectionNewPromptClearsCodeLessErrorAndLastStreamErrorOnResume() async throws {
+        try await assertNewPromptRetiresPlainError(code: nil, throughResume: true)
+    }
+
+    func testReattachConsumerClearsObsoletePlainFailureOnFreshSnapshot() async throws {
+        try await assertNewPromptRetiresPlainError(code: "turn_failed_empty", throughResume: false)
+    }
+
+    func testFreshSnapshotPreservesTypedFailureAndUnrelatedAdvisory() async throws {
+        let h = try RecoveryHarness()
+        defer { finish(h) }
+        h.server.setDetail(text: "Partial reply", status: "in_progress")
+        h.server.setConnected(true)
+        h.nextSnapshot = try snapshot(text: "Partial reply",
+                                      lastError: ["message": "Old raw failure", "code": "turn_failed_empty",
+                                                  "details": "Obsolete raw diagnostic"])
+        await h.model.load()
+        try await eventually("The plain snapshot error initially owns the explanation") {
+            h.model.liveTurn?.errorMessage == "Old raw failure" && h.model.errorDetails != nil
+        }
+        let live = try XCTUnwrap(h.model.liveTurn)
+        let stream = try XCTUnwrap(h.streams.last)
+        stream.emit(try RecoveryFixtures.event("session_failure", fields: ["record": failure("Current typed failure")]))
+        stream.emit(try RecoveryFixtures.event("session_notice", fields: [
+            "notice": ["severity": "warning", "title": "Keep this advisory"]
+        ]))
+        try await drain(stream, h: h, token: 51)
+        XCTAssertEqual(live.errorMessage, "Current typed failure")
+        h.nextSnapshot = try snapshot(text: "Recovered reply")
+        await h.model.resume()
+        try await eventually("Only the obsolete raw diagnostic is retired") {
+            h.liveText == "Recovered reply" && h.model.errorDetails == nil
+        }
+        XCTAssertTrue(h.model.liveTurn === live)
+        XCTAssertEqual(live.errorMessage, "Current typed failure")
+        XCTAssertEqual(h.model.notice, "Keep this advisory")
+        let current = try XCTUnwrap(h.streams.last)
+        current.emit(try RecoveryFixtures.event("session_failure", fields: ["record": failure("Resolved", resolved: true)]))
+        current.emit(try RecoveryFixtures.event("error", fields: ["message": "New plain failure", "code": "turn_failed_empty"]))
+        try await drain(current, h: h, token: 52)
+        XCTAssertEqual(live.errorMessage, "New plain failure")
+    }
+
+    func testFreshSnapshotKeepsAdvisoryThatReplacedPlainNoticeWithTheSameText() async throws {
+        let h = try RecoveryHarness()
+        defer { finish(h) }
+        h.server.setDetail(text: "Partial reply", status: "in_progress")
+        h.server.setConnected(true)
+        h.nextSnapshot = try snapshot(text: "Partial reply",
+                                      lastError: ["message": "Shared explanation", "details": "Old diagnostic"])
+        await h.model.load()
+        try await eventually("The plain session error owns the initial notice") {
+            h.model.notice == "Shared explanation" && h.model.errorDetails == "Old diagnostic"
+        }
+        let stream = try XCTUnwrap(h.streams.last)
+        stream.emit(try RecoveryFixtures.event("session_notice", fields: [
+            "notice": ["severity": "warning", "title": "Shared explanation"]
+        ]))
+        try await drain(stream, h: h, token: 55)
+        h.nextSnapshot = try snapshot(text: "New prompt reply")
+        await h.model.resume()
+        try await eventually("The new prompt clears the raw diagnostic") {
+            h.liveText == "New prompt reply" && h.model.errorDetails == nil
+        }
+        XCTAssertEqual(h.model.notice, "Shared explanation")
+        XCTAssertNil(h.model.liveTurn?.errorMessage)
+        let live = try XCTUnwrap(h.model.liveTurn)
+        try XCTUnwrap(h.streams.last).emit(.snapshot(try snapshot()))
+        try await eventually("The old lastStreamError cannot fail the new turn") { !h.model.isInFlight }
+        XCTAssertEqual(live.stopReason, "end_turn")
+        XCTAssertNil(live.errorMessage)
+        XCTAssertEqual(h.model.notice, "Shared explanation")
+    }
+
+    private func assertPendingPromptKeepsIdenticalFailure(status: String) async throws {
+        let h = try RecoveryHarness()
+        defer {
+            h.close()
+            XCTAssertEqual(h.server.unexpectedRequests, [])
+            XCTAssertEqual(h.server.count("acp_prompt"), 1)
+            XCTAssertEqual(h.server.count("acp_connect"), 0)
+        }
+        var detail = RecoveryFixtures.detail(text: "Unused", status: "completed")
+        var turns = detail["turns"] as! [[String: Any]]
+        turns.removeLast()
+        turns.append(["id": "old-failure", "role": "system", "timestamp": RecoveryFixtures.date,
+                      "blocks": [["type": "turn_error", "message": "Empty reply"]]])
+        detail["turns"] = turns
+        h.server.setDetailPayload(detail)
+        await h.model.load()
+        h.server.setConnected(true)
+        h.nextSnapshot = try snapshot(lastError: ["message": "Empty reply", "code": "turn_failed_empty"])
+        h.model.draft = "A new prompt"
+        h.model.send()
+        try await eventually("The new prompt is accepted while its user turn is optimistic") {
+            h.server.count("acp_prompt") == 1 && !h.model.isSubmittingPrompt
+        }
+        XCTAssertEqual(h.model.pendingUserTurns.count, 1)
+        let live = try XCTUnwrap(h.model.liveTurn)
+        h.nextDeliversSnapshot = false
+        await h.model.resume()
+        let stream = try XCTUnwrap(h.streams.last)
+        try await eventually("Recovery attaches before receiving its snapshot") { stream.attachCount == 1 }
+        turns.append(["id": "new-user", "role": "user", "timestamp": RecoveryFixtures.date,
+                      "blocks": [["type": "text", "text": "A new prompt"]]])
+        detail["turns"] = turns
+        if status == "connected" {
+            var lagging = detail
+            lagging["turns"] = Array(turns.dropLast()) + [
+                ["id": "late-old-note", "role": "system", "timestamp": RecoveryFixtures.date,
+                 "blocks": [["type": "text", "text": "Late metadata from the old prompt"]]]
+            ]
+            h.server.setDetailPayload(lagging)
+        } else {
+            h.server.setDetailPayload(detail)
+        }
+        let gate = h.server.holdNextDetail()
+        defer { gate.release() }
+        stream.emit(.snapshot(try snapshot(status: status,
+                                            lastError: ["message": "Empty reply", "code": "turn_failed_empty"])))
+        try await eventually("The new identical failure settles while the old transcript remains loaded") {
+            !h.model.isInFlight && stream.isClosed
+        }
+        XCTAssertTrue(h.model.liveTurn === live)
+        XCTAssertEqual(live.errorMessage, "Empty reply")
+        XCTAssertEqual(h.model.pendingUserTurns.count, 1)
+        XCTAssertEqual(h.model.turns.last?.id, "old-failure")
+        // A dead connection does not launch refreshAfterTurn; resume explicitly
+        // to exercise that branch's subsequent reconciliation as well.
+        var recovery: Task<Void, Never>?
+        if status == "disconnected" {
+            h.nextDeliversSnapshot = true
+            h.nextSnapshot = try snapshot(status: status,
+                                           lastError: ["message": "Empty reply", "code": "turn_failed_empty"])
+            recovery = Task { await h.model.resume() }
+        }
+        defer { recovery?.cancel() }
+        try await eventually("Post-settlement detail is held before the new failure persists") { gate.hasRequest }
+        gate.release()
+        await recovery?.value
+        if status == "connected" {
+            try await eventually("History growth for the old prompt cannot deduplicate the new failure") {
+                h.model.turns.last?.id == "late-old-note" && h.model.liveTurn?.errorMessage == "Empty reply"
+            }
+            XCTAssertEqual(h.model.pendingUserTurns.count, 1)
+            h.server.setDetailPayload(detail)
+            h.nextDeliversSnapshot = true
+            h.nextSnapshot = try snapshot(lastError: ["message": "Empty reply", "code": "turn_failed_empty"])
+            await h.model.resume()
+        }
+        try await eventually("Persisting only the new user must keep its failure visible") {
+            h.model.turns.last?.id == "new-user" && h.model.liveTurn?.errorMessage == "Empty reply" && !h.model.isInFlight
+        }
+        turns.append(["id": "new-failure", "role": "system", "timestamp": RecoveryFixtures.date,
+                      "blocks": [["type": "turn_error", "message": "Empty reply"]]])
+        detail["turns"] = turns
+        h.server.setDetailPayload(detail)
+        h.nextDeliversSnapshot = true
+        h.nextSnapshot = try snapshot(status: status,
+                                       lastError: ["message": "Empty reply", "code": "turn_failed_empty"])
+        await h.model.resume()
+        try await eventually("The same current persisted failure owns the final presentation") {
+            h.model.turns.last?.id == "new-failure" && h.streams.last?.isClosed == true && !h.model.isInFlight
+        }
+        XCTAssertNil(h.model.liveTurn?.errorMessage)
+        let prompt = try XCTUnwrap(h.model.turns.lastIndex(where: { $0.role == .user }))
+        XCTAssertEqual(h.model.turns.dropFirst(prompt + 1).flatMap(\.blocks), [.turnError(message: "Empty reply")])
+    }
+
+    func testPendingAcceptedPromptKeepsIdenticalFailureUntilItsOwnErrorPersists() async throws {
+        try await assertPendingPromptKeepsIdenticalFailure(status: "connected")
+    }
+
+    func testDeadSnapshotDoesNotDeduplicateAgainstPreviousPromptWhileNewPromptIsPending() async throws {
+        try await assertPendingPromptKeepsIdenticalFailure(status: "disconnected")
+    }
+
+    private func assertIdleProbeReleases(_ frame: EventStream.Frame) async throws {
+        let h = try RecoveryHarness()
+        defer { finish(h) }
+        h.server.setDetail(text: "Completed reply", status: "completed")
+        h.server.setConnected(true)
+        h.nextDeliversSnapshot = false
+        h.model.draft = "Unsent draft"
+        await h.model.load()
+        let stream = try XCTUnwrap(h.streams.last)
+        try await eventually("Completed-history discovery attaches without a snapshot") { stream.attachCount == 1 }
+        let turns = h.model.turns
+        XCTAssertNil(h.model.liveTurn)
+        XCTAssertFalse(h.model.isInFlight)
+        XCTAssertEqual(h.model.sendState, .idle)
+        stream.emit(frame)
+        try await eventually("An unconfirmed idle probe releases quietly") { stream.isClosed }
+        XCTAssertNil(h.model.liveTurn)
+        XCTAssertFalse(h.model.isInFlight)
+        XCTAssertEqual(h.model.sendState, .idle)
+        XCTAssertEqual(h.model.turns, turns)
+        XCTAssertEqual(h.model.draft, "Unsent draft")
+        XCTAssertTrue(h.model.pendingUserTurns.isEmpty)
+        XCTAssertTrue(h.model.queuedMessages.isEmpty)
+        XCTAssertNil(h.model.notice)
+        XCTAssertNil(h.model.errorDetails)
+        XCTAssertEqual(h.streams.count, 1)
+        XCTAssertEqual(h.server.count("get_folder_conversation"), 1)
+        // A later explicit resume can probe again; the failed probe left no
+        // stream/reconnect owner behind.
+        h.nextDeliversSnapshot = true
+        await h.model.resume()
+        try await eventually("A subsequent empty idle snapshot also releases") {
+            h.streams.count == 2 && h.streams.last?.isClosed == true
+        }
+        XCTAssertNil(h.model.liveTurn)
+        XCTAssertEqual(h.model.draft, "Unsent draft")
+    }
+
+    func testCompletedHistoryProbeReleasesConnectionGoneBeforeFirstSnapshot() async throws {
+        try await assertIdleProbeReleases(.detached(reason: "connection_gone"))
+    }
+
+    func testCompletedHistoryProbeReleasesTransientDetachBeforeFirstSnapshot() async throws {
+        try await assertIdleProbeReleases(.detached(reason: "server_shutdown"))
+    }
+
+    func testCompletedHistoryProbeReleasesTransportCloseBeforeFirstSnapshot() async throws {
+        try await assertIdleProbeReleases(.closed(reason: "Transport dropped"))
+    }
+
+    func testActiveHistoryStillReconnectsAfterTransportCloseBeforeFirstSnapshot() async throws {
+        let h = try RecoveryHarness()
+        defer { finish(h) }
+        h.server.setDetail(text: "Partial reply", status: "in_progress")
+        h.server.setConnected(true)
+        h.nextDeliversSnapshot = false
+        await h.model.load()
+        let stream = try XCTUnwrap(h.streams.last)
+        try await eventually("An expected live stream attaches") { stream.attachCount == 1 }
+        let live = try XCTUnwrap(h.model.liveTurn)
+        XCTAssertTrue(h.model.isInFlight)
+        h.nextDeliversSnapshot = true
+        h.nextSnapshot = try snapshot(text: "Recovered active reply")
+        stream.emit(.closed(reason: "Transport dropped"))
+        try await eventually("An active row retains pre-snapshot reconnect recovery") {
+            h.streams.count == 2 && h.liveText == "Recovered active reply" && h.model.isInFlight
+        }
+        XCTAssertTrue(h.model.liveTurn === live)
+        XCTAssertNil(live.errorMessage)
+    }
+
+    func testActiveHistoryStillReconcilesConnectionGoneBeforeFirstSnapshot() async throws {
+        let h = try RecoveryHarness()
+        defer { finish(h) }
+        h.server.setDetail(text: "Partial reply", status: "in_progress")
+        h.server.setConnected(true)
+        h.nextDeliversSnapshot = false
+        await h.model.load()
+        let stream = try XCTUnwrap(h.streams.last)
+        try await eventually("An expected live stream attaches") { stream.attachCount == 1 }
+        let live = try XCTUnwrap(h.model.liveTurn)
+        stream.emit(.detached(reason: "connection_gone"))
+        try await eventually("A missing real active connection still reconciles and reports failure") {
+            !h.model.isInFlight && live.errorMessage != nil
+        }
+        XCTAssertTrue(h.model.liveTurn === live)
+        XCTAssertEqual(live.errorMessage, "Lost the connection. Your reply may still be running — reopen the session to check.")
+        XCTAssertEqual(h.server.count("get_folder_conversation"), 2)
+    }
+
+    func testCompletedHistoryProbeBecomesRecoverableAfterActiveSnapshot() async throws {
+        let h = try RecoveryHarness()
+        defer { finish(h) }
+        h.server.setDetail(text: "Completed reply", status: "completed")
+        h.server.setConnected(true)
+        h.nextDeliversSnapshot = false
+        await h.model.load()
+        let stream = try XCTUnwrap(h.streams.last)
+        try await eventually("Idle probe attaches") { stream.attachCount == 1 }
+        XCTAssertNil(h.model.liveTurn)
+        stream.emit(.snapshot(try snapshot(text: "Started elsewhere")))
+        try await eventually("The snapshot proves a real turn is active") {
+            h.liveText == "Started elsewhere" && h.model.isInFlight
+        }
+        let live = try XCTUnwrap(h.model.liveTurn)
+        h.nextDeliversSnapshot = true
+        h.nextSnapshot = try snapshot(text: "Recovered after confirmation")
+        stream.emit(.closed(reason: "Transport dropped"))
+        try await eventually("The confirmed turn uses ordinary reconnect recovery") {
+            h.streams.count == 2 && h.liveText == "Recovered after confirmation" && h.model.isInFlight
+        }
+        XCTAssertTrue(h.model.liveTurn === live)
+        XCTAssertNil(live.errorMessage)
+    }
+
     func testPrePromptHandshakeSeedsWatermarksWithoutApplyingPreviousTurnError() async throws {
         let h = try RecoveryHarness()
         defer {

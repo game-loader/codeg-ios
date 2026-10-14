@@ -195,13 +195,55 @@ final class TerminalSnapshotRecoveryTests: XCTestCase {
 #if canImport(UIKit)
 @MainActor
 final class TerminalSnapshotNetworkingTests: XCTestCase {
-    private func eventually(_ predicate: () -> Bool) async throws {
+    private func eventually(_ description: String = #function,
+                            file: StaticString = #filePath, line: UInt = #line,
+                            diagnostics: () -> String = { "" },
+                            _ predicate: () -> Bool) async throws {
         for _ in 0..<400 {
             if predicate() { return }
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTFail("Terminal condition did not settle")
-        throw URLError(.timedOut)
+        let state = diagnostics()
+        let message = "Terminal condition did not settle: \(description)" + (state.isEmpty ? "" : "; \(state)")
+        XCTFail(message, file: file, line: line)
+        throw TerminalConditionTimeout(description: "\(file):\(line): \(message)")
+    }
+
+    /// Fixture metadata only: never log tokens, request bodies, or terminal output.
+    private func restartDiagnostics(session: TerminalSession, fixture: WorktreeTestFixture,
+                                    sockets: TerminalRecoveryTestSockets, gate: WorktreeTestGate,
+                                    snapshotReleased: Bool) -> String {
+        let phase: String
+        switch session.phase {
+        case .idle: phase = "idle"
+        case .connecting: phase = "connecting"
+        case .running: phase = "running"
+        case .exited: phase = "exited"
+        case .failed: phase = "failed"
+        }
+        let recovery: String
+        switch session.recoveryState {
+        case .streaming: recovery = "streaming"
+        case .recovering: recovery = "recovering"
+        case .legacy: recovery = "legacy"
+        case .exited: recovery = "exited"
+        case .retired: recovery = "retired"
+        case .unavailable(let reason):
+            switch reason {
+            case .missing: recovery = "unavailable(missing)"
+            case .generationChanged: recovery = "unavailable(generationChanged)"
+            case .sequenceRegressed: recovery = "unavailable(sequenceRegressed)"
+            case .bufferOverflow: recovery = "unavailable(bufferOverflow)"
+            case .invalidSnapshot: recovery = "unavailable(invalidSnapshot)"
+            case .request: recovery = "unavailable(request)"
+            }
+        }
+        let routes = ["get_system_terminal_settings", "terminal_spawn", "terminal_kill",
+                      "terminal_snapshot", "terminal_resize", "terminal_write"]
+            .map { "\($0)=\(fixture.server.count($0))" }.joined(separator: ",")
+        return "phase=\(phase), recovery=\(recovery), \(sockets.diagnostics), routes=[\(routes)], "
+            + "unexpectedRoutes=\(fixture.server.unexpected.count), snapshotRequested=\(gate.hasRequest), "
+            + "snapshotReleased=\(snapshotReleased)"
     }
 
     private func reply(alive: Bool = true, exists: Bool = true, data: String = "snapshot", seq: Int = 4,
@@ -404,42 +446,75 @@ final class TerminalSnapshotNetworkingTests: XCTestCase {
         let sockets = TerminalRecoveryTestSockets()
         let session = TerminalSession(client: fixture.client.bound(to: lifetime), folder: fixture.folder,
                                       socketFactory: { sockets.make(client: $0) })
-        defer { lifetime.invalidate(); session.retire(); fixture.close() }
+        let gate = WorktreeTestGate()
+        var snapshotReleased = false
+        let diagnostics = {
+            self.restartDiagnostics(session: session, fixture: fixture, sockets: sockets,
+                                    gate: gate, snapshotReleased: snapshotReleased)
+        }
+        defer {
+            if let testRun, testRun.failureCount > 0 {
+                print("Terminal restart fixture failure: \(diagnostics())")
+            }
+            gate.release(); lifetime.invalidate(); session.retire(); fixture.close()
+        }
         try prepare(fixture)
         session.start()
-        try await eventually { sockets.count == 1 }
+        try await eventually("initial socket opens", diagnostics: diagnostics) { sockets.count == 1 }
         sockets.at(0).emit(.ready)
-        try await eventually { session.phase == .running }
+        try await eventually("initial PTY runs after ready", diagnostics: diagnostics) { session.phase == .running }
         let oldID = try XCTUnwrap(fixture.server.bodies("terminal_spawn").first?["terminalId"] as? String)
-        let gate = WorktreeTestGate()
         var held = try reply(data: "old recovery must not appear")
         held.gate = gate
         fixture.server.enqueue("terminal_snapshot", held)
         sockets.at(0).emit(.closed(reason: "gap"))
-        try await eventually { sockets.count == 2 }
+        try await eventually("recovery socket opens", diagnostics: diagnostics) { sockets.count == 2 }
         sockets.at(1).emit(.ready)
-        try await eventually { gate.hasRequest }
+        try await eventually("old snapshot HTTP reaches hold", diagnostics: diagnostics) { gate.hasRequest }
         try prepare(fixture)
         fixture.server.enqueue("terminal_kill", WorktreeTestReply(data: Data("null".utf8)))
+        // Queue old-consumer frames on this actor immediately before restart.
+        // They must not mutate the replacement when the consumer next resumes.
+        sockets.at(1).emit(.output(id: oldID, data: "stale consumer", seq: 98, generation: "pty-a"))
+        sockets.at(1).emit(.exit(id: oldID, generation: "pty-a"))
         session.restart()
-        try await eventually { sockets.count == 3 && fixture.server.count("terminal_kill") == 1 }
-        gate.release()
+        try await eventually("replacement sockets=3 and old PTY kills=1 while snapshot held", diagnostics: diagnostics) {
+            sockets.count == 3 && fixture.server.count("terminal_kill") == 1
+        }
+        XCTAssertEqual(session.phase, .connecting)
+        XCTAssertEqual(fixture.server.count("terminal_spawn"), 1, "Replacement must await its own ready frame")
+        XCTAssertTrue(sockets.at(1).isClosed)
         sockets.at(2).emit(.ready)
-        try await eventually { session.phase == .running }
+        try await eventually("replacement PTY runs while old snapshot held", diagnostics: diagnostics) { session.phase == .running }
         let newID = try XCTUnwrap(fixture.server.bodies("terminal_spawn").last?["terminalId"] as? String)
         XCTAssertNotEqual(oldID, newID)
         XCTAssertNotNil(UUID(uuidString: newID))
         let close = try XCTUnwrap(fixture.server.bodies("terminal_kill").first)
         XCTAssertEqual(Set(close.keys), ["terminalId"])
         XCTAssertEqual(close["terminalId"] as? String, oldID)
-        XCTAssertTrue(sockets.at(1).isClosed)
         sockets.at(2).emit(.output(id: oldID, data: "wrong terminal", seq: 99, generation: "pty-a"))
         sockets.at(2).emit(.exit(id: oldID, generation: "pty-a"))
         sockets.at(2).emit(.output(id: newID, data: "fresh", seq: 1, generation: "pty-b"))
-        try await eventually { String(decoding: session.view.getTerminal().getBufferAsData(), as: UTF8.self).contains("fresh") }
+        try await eventually("replacement renders its own output", diagnostics: diagnostics) {
+            String(decoding: session.view.getTerminal().getBufferAsData(), as: UTF8.self).contains("fresh")
+        }
+        snapshotReleased = true
+        gate.release()
+        // Let the cancelled HTTP/consumer continuations run before final checks.
+        await Task.yield()
         XCTAssertEqual(session.phase, .running)
-        XCTAssertFalse(String(decoding: session.view.getTerminal().getBufferAsData(), as: UTF8.self).contains("old recovery"))
+        XCTAssertEqual(session.recoveryState, .streaming)
+        let text = String(decoding: session.view.getTerminal().getBufferAsData(), as: UTF8.self)
+        XCTAssertTrue(text.contains("fresh"))
+        XCTAssertFalse(text.contains("old recovery"))
+        XCTAssertFalse(text.contains("wrong terminal"))
+        XCTAssertFalse(text.contains("stale consumer"))
+        XCTAssertEqual(fixture.server.count("get_system_terminal_settings"), 2)
+        XCTAssertEqual(fixture.server.count("terminal_spawn"), 2)
+        XCTAssertEqual(fixture.server.count("terminal_kill"), 1)
         XCTAssertEqual(fixture.server.count("terminal_snapshot"), 1)
+        XCTAssertEqual(sockets.count, 3)
+        XCTAssertTrue(fixture.server.unexpected.isEmpty)
     }
 
     func testReplayDimensionsDoNotSendTemporaryResizeOrOverwritePaneSize() async throws {
@@ -476,12 +551,23 @@ final class TerminalSnapshotNetworkingTests: XCTestCase {
     }
 }
 
+private struct TerminalConditionTimeout: Error, CustomStringConvertible {
+    let description: String
+}
+
 private final class TerminalRecoveryTestSockets: @unchecked Sendable {
     private let lock = NSLock()
     private var sockets: [TerminalRecoveryTestSocket] = []
     private var capturedHosts: [String] = []
     var count: Int { lock.withLock { sockets.count } }
     var hosts: [String] { lock.withLock { capturedHosts } }
+    var diagnostics: String {
+        lock.withLock {
+            let states = sockets.enumerated().map { "\($0.offset):\($0.element.isClosed ? "closed" : "open")" }
+                .joined(separator: ",")
+            return "sockets=\(sockets.count)[\(states)]"
+        }
+    }
     func at(_ index: Int) -> TerminalRecoveryTestSocket { lock.withLock { sockets[index] } }
     func make(client: CodegClient) -> TerminalRecoveryTestSocket {
         lock.withLock {
