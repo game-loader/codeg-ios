@@ -480,17 +480,36 @@ final class SessionDetailViewModel {
                     await refreshAfterTurn(reconciling: live)
                     return
                 }
+                // History can grow for the previous prompt while the accepted
+                // user is still optimistic. Preserve that boundary before adopting
+                // the transcript, and keep an unpersisted failure as a fallback.
+                let promptPending = !pendingUserTurns.isEmpty
+                    && detail.turns.last(where: { $0.role == .user })?.id
+                        == turns.last(where: { $0.role == .user })?.id
+                let retainedFailure = liveTurn.flatMap {
+                    Self.errorOnlyTurn(from: $0, persistedTurns: detail.turns, promptPending: promptPending)
+                }
                 closeStream()
                 isTurnActive = false
                 clearInteractivePrompts()
                 clearRetryNotice()
                 turns = detail.turns
-                pendingUserTurns.removeAll()
+                if !promptPending { pendingUserTurns.removeAll() }
                 liveTurn = nil
                 liveTurnFromReattach = false
                 sendState = .idle
                 requestScrollToBottom()
+                let recoveryStreamGeneration = streamGeneration
                 await reattachIfLive(serverSaysLive: serverSaysLive)
+                // Reattach needs a nil live owner so it can probe and replay the
+                // authoritative snapshot. Restore only if it found no stream or
+                // replacement, and this activation still owns the conversation.
+                if let retainedFailure, (try? client.checkBinding()) != nil,
+                   !Task.isCancelled, generation == resumeGeneration,
+                   recoveryStreamGeneration == streamGeneration,
+                   liveTurn == nil, stream == nil {
+                    liveTurn = retainedFailure
+                }
                 return
             } catch {
                 guard !Task.isCancelled, generation == resumeGeneration,

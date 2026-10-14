@@ -432,7 +432,8 @@ final class SessionFailureSnapshotTests: XCTestCase {
         XCTAssertEqual(h.model.notice, "Shared explanation")
     }
 
-    private func assertPendingPromptKeepsIdenticalFailure(status: String) async throws {
+    private func assertPendingPromptKeepsIdenticalFailure(status: String,
+                                                         connectionAvailableOnLaggingResume: Bool = true) async throws {
         let h = try RecoveryHarness()
         defer {
             h.close()
@@ -456,6 +457,7 @@ final class SessionFailureSnapshotTests: XCTestCase {
             h.server.count("acp_prompt") == 1 && !h.model.isSubmittingPrompt
         }
         XCTAssertEqual(h.model.pendingUserTurns.count, 1)
+        let pendingUser = try XCTUnwrap(h.model.pendingUserTurns.first)
         let live = try XCTUnwrap(h.model.liveTurn)
         h.nextDeliversSnapshot = false
         await h.model.resume()
@@ -503,14 +505,49 @@ final class SessionFailureSnapshotTests: XCTestCase {
                 h.model.turns.last?.id == "late-old-note" && h.model.liveTurn?.errorMessage == "Empty reply"
             }
             XCTAssertEqual(h.model.pendingUserTurns.count, 1)
-            h.server.setDetailPayload(detail)
+            // Resume once more while only old-prompt metadata has persisted.
+            // A connected snapshot must replay without losing the optimistic
+            // prompt; a discovery miss must retain its finalized explanation.
             h.nextDeliversSnapshot = true
+            h.nextSnapshot = try snapshot(lastError: ["message": "Empty reply", "code": "turn_failed_empty"])
+            h.server.setConnected(connectionAvailableOnLaggingResume)
+            let streamCount = h.streams.count
+            let discoveryCount = h.server.count("acp_find_connection_for_conversation")
+            await h.model.resume()
+            if connectionAvailableOnLaggingResume {
+                try await eventually("The same connected failure replays against still-lagging history") {
+                    h.streams.count == streamCount + 1 && h.streams.last?.isClosed == true
+                        && h.model.liveTurn?.errorMessage == "Empty reply" && !h.model.isInFlight
+                }
+                XCTAssertEqual(h.streams.last?.attachCount, 1)
+            } else {
+                XCTAssertEqual(h.streams.count, streamCount)
+            }
+            XCTAssertEqual(h.server.count("acp_find_connection_for_conversation"), discoveryCount + 1)
+            XCTAssertEqual(h.model.turns.last?.id, "late-old-note")
+            XCTAssertEqual(h.model.pendingUserTurns, [pendingUser])
+            XCTAssertEqual(h.model.liveTurn?.errorMessage, "Empty reply")
+            XCTAssertEqual(h.model.liveTurn?.stopReason, "error")
+            XCTAssertEqual(h.model.liveTurn?.isStreaming, false)
+            XCTAssertEqual(h.model.liveTurn?.hasContent, false)
+            if !connectionAvailableOnLaggingResume {
+                h.server.setConnected(true)
+                h.nextSnapshot = try snapshot(text: "Recovered active reply")
+                await h.model.resume()
+                try await eventually("An active snapshot replaces the retained failure after discovery recovers") {
+                    h.liveText == "Recovered active reply" && h.model.isInFlight
+                        && h.model.liveTurn?.errorMessage == nil
+                }
+                XCTAssertEqual(h.model.pendingUserTurns, [pendingUser])
+            }
+            h.server.setDetailPayload(detail)
             h.nextSnapshot = try snapshot(lastError: ["message": "Empty reply", "code": "turn_failed_empty"])
             await h.model.resume()
         }
         try await eventually("Persisting only the new user must keep its failure visible") {
             h.model.turns.last?.id == "new-user" && h.model.liveTurn?.errorMessage == "Empty reply" && !h.model.isInFlight
         }
+        XCTAssertTrue(h.model.pendingUserTurns.isEmpty)
         turns.append(["id": "new-failure", "role": "system", "timestamp": RecoveryFixtures.date,
                       "blocks": [["type": "turn_error", "message": "Empty reply"]]])
         detail["turns"] = turns
@@ -533,6 +570,10 @@ final class SessionFailureSnapshotTests: XCTestCase {
 
     func testDeadSnapshotDoesNotDeduplicateAgainstPreviousPromptWhileNewPromptIsPending() async throws {
         try await assertPendingPromptKeepsIdenticalFailure(status: "disconnected")
+    }
+
+    func testPendingAcceptedPromptPreservesFailureWithoutConnectionAndRecoversActiveSnapshot() async throws {
+        try await assertPendingPromptKeepsIdenticalFailure(status: "connected", connectionAvailableOnLaggingResume: false)
     }
 
     private func assertIdleProbeReleases(_ frame: EventStream.Frame) async throws {

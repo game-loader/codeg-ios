@@ -241,7 +241,9 @@ final class TerminalSnapshotNetworkingTests: XCTestCase {
         let routes = ["get_system_terminal_settings", "terminal_spawn", "terminal_kill",
                       "terminal_snapshot", "terminal_resize", "terminal_write"]
             .map { "\($0)=\(fixture.server.count($0))" }.joined(separator: ",")
-        return "phase=\(phase), recovery=\(recovery), \(sockets.diagnostics), routes=[\(routes)], "
+        let terminal = session.view.getTerminal()
+        return "phase=\(phase), recovery=\(recovery), emulator=\(terminal.cols)x\(terminal.rows), "
+            + "\(sockets.diagnostics), routes=[\(routes)], "
             + "unexpectedRoutes=\(fixture.server.unexpected.count), snapshotRequested=\(gate.hasRequest), "
             + "snapshotReleased=\(snapshotReleased)"
     }
@@ -446,6 +448,10 @@ final class TerminalSnapshotNetworkingTests: XCTestCase {
         let sockets = TerminalRecoveryTestSockets()
         let session = TerminalSession(client: fixture.client.bound(to: lifetime), folder: fixture.folder,
                                       socketFactory: { sockets.make(client: $0) })
+        // This headless view has no UIKit layout or snapshot to size its emulator.
+        // SwiftTerm's zero-frame 2x1 grid wraps words across raw-buffer newlines.
+        let terminal = session.view.getTerminal()
+        terminal.resize(cols: 120, rows: 40)
         let gate = WorktreeTestGate()
         var snapshotReleased = false
         let diagnostics = {
@@ -464,6 +470,11 @@ final class TerminalSnapshotNetworkingTests: XCTestCase {
         sockets.at(0).emit(.ready)
         try await eventually("initial PTY runs after ready", diagnostics: diagnostics) { session.phase == .running }
         let oldID = try XCTUnwrap(fixture.server.bodies("terminal_spawn").first?["terminalId"] as? String)
+        XCTAssertNotNil(UUID(uuidString: oldID))
+        sockets.at(0).emit(.output(id: oldID, data: "old live output", seq: 1, generation: "pty-a"))
+        try await eventually("initial PTY renders its own output", diagnostics: diagnostics) {
+            String(decoding: terminal.getBufferAsData(), as: UTF8.self).contains("old live output")
+        }
         var held = try reply(data: "old recovery must not appear")
         held.gate = gate
         fixture.server.enqueue("terminal_snapshot", held)
@@ -478,6 +489,8 @@ final class TerminalSnapshotNetworkingTests: XCTestCase {
         sockets.at(1).emit(.output(id: oldID, data: "stale consumer", seq: 98, generation: "pty-a"))
         sockets.at(1).emit(.exit(id: oldID, generation: "pty-a"))
         session.restart()
+        XCTAssertEqual(terminal.cols, 120)
+        XCTAssertEqual(terminal.rows, 40)
         try await eventually("replacement sockets=3 and old PTY kills=1 while snapshot held", diagnostics: diagnostics) {
             sockets.count == 3 && fixture.server.count("terminal_kill") == 1
         }
@@ -498,22 +511,37 @@ final class TerminalSnapshotNetworkingTests: XCTestCase {
         try await eventually("replacement renders its own output", diagnostics: diagnostics) {
             String(decoding: session.view.getTerminal().getBufferAsData(), as: UTF8.self).contains("fresh")
         }
+        sockets.at(2).emit(.output(id: newID, data: "wrong generation", seq: 99, generation: "pty-a"))
+        sockets.at(2).emit(.exit(id: newID, generation: "pty-a"))
         snapshotReleased = true
         gate.release()
-        // Let the cancelled HTTP/consumer continuations run before final checks.
+        // A valid frame after stale frames also proves the consumer remains live.
+        sockets.at(2).emit(.output(id: newID, data: " still current", seq: 2, generation: "pty-b"))
+        try await eventually("replacement keeps rendering after stale frames and HTTP release", diagnostics: diagnostics) {
+            String(decoding: terminal.getBufferAsData(), as: UTF8.self).contains("fresh still current")
+        }
+        // Let the cancelled HTTP continuation run before final checks.
         await Task.yield()
         XCTAssertEqual(session.phase, .running)
         XCTAssertEqual(session.recoveryState, .streaming)
         let text = String(decoding: session.view.getTerminal().getBufferAsData(), as: UTF8.self)
         XCTAssertTrue(text.contains("fresh"))
+        XCTAssertTrue(text.contains("fresh still current"))
+        XCTAssertFalse(text.contains("old live output"))
         XCTAssertFalse(text.contains("old recovery"))
         XCTAssertFalse(text.contains("wrong terminal"))
         XCTAssertFalse(text.contains("stale consumer"))
+        XCTAssertFalse(text.contains("wrong generation"))
+        XCTAssertEqual(terminal.cols, 120)
+        XCTAssertEqual(terminal.rows, 40)
         XCTAssertEqual(fixture.server.count("get_system_terminal_settings"), 2)
         XCTAssertEqual(fixture.server.count("terminal_spawn"), 2)
         XCTAssertEqual(fixture.server.count("terminal_kill"), 1)
         XCTAssertEqual(fixture.server.count("terminal_snapshot"), 1)
         XCTAssertEqual(sockets.count, 3)
+        XCTAssertTrue(sockets.at(0).isClosed)
+        XCTAssertTrue(sockets.at(1).isClosed)
+        XCTAssertFalse(sockets.at(2).isClosed)
         XCTAssertTrue(fixture.server.unexpected.isEmpty)
     }
 
