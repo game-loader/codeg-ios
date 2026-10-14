@@ -31,6 +31,10 @@ codeg backend; the app only calls its HTTP + WebSocket API.
 
 Saved servers keep separate navigation, activity and chat drafts. The Folders tab defaults to logical projects, grouping repositories with the same Git source across server paths; a Servers view keeps the machine-first catalog. Logical projects show combined session history across servers and worktrees, with the original server/location on each row and explicit destinations for New Task. Folder details retain session, file, Git and terminal access. iPad can show two servers together. Source identity and full worktree management require the updated Codeg Server. See [the iOS worktree guide](docs/multi-host-worktrees.md).
 
+## Codeg Server v0.35.1
+
+This fork adds server-scoped conversation tags, Any/All chat filtering, UI Render settings and native display of supported `spec` layouts and charts. Older servers without tags remain usable. Existing multi-server navigation, worktrees, attachments and drafts are retained. See [the update notes](docs/server-0.35.1-ios-update.md).
+
 ## Requirements
 
 - Xcode 26 / iOS 26 SDK

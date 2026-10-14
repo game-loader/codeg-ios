@@ -85,7 +85,18 @@ private struct ServerWorkspaceView: View {
     var body: some View {
         observedShell
             .environment(\.serverWorkspaceVisible, isVisible)
+            .environment(\.conversationTagsModel, workspace.conversationTags)
+            .onChange(of: workspace.conversationTags?.catalogRevision, initial: true) { _, _ in
+                workspace.synchronizeConversationTagFilter()
+            }
+            .onChange(of: workspace.conversationTags?.isUnsupported, initial: true) { _, _ in
+                workspace.synchronizeConversationTagFilter()
+            }
             .disabled(!isVisible)
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                await workspace.refreshConversationTags()
+            }
             .task(id: activityPulseID) { await refreshActivity() }
             .task(id: activityPulseID) {
                 guard scenePhase == .active, !workspace.isRetired else { return }
@@ -235,6 +246,7 @@ private struct ServerWorkspaceView: View {
                 SessionListView(
                     server: server,
                     client: client,
+                    tagFilter: workspace.conversationTagFilter,
                     selectedConversationID: $model.selectedConversationID,
                     onOpen: { model.open(.conversation($0)) },
                     onNewSession: { model.open(.newSession(NewSessionRequest())) },
@@ -315,6 +327,7 @@ private struct ServerWorkspaceView: View {
                 client: model.selectedClient(),
                 onOpen: { model.open(.conversation($0)) }
             )
+            .environment(\.conversationTagFilter, workspace.conversationTagFilter)
             .id(model.selectedServerID)
             .navigationDestination(for: Route.self) { route in
                 routeDestination(route)
@@ -356,6 +369,7 @@ private struct ServerWorkspaceView: View {
                 SessionListView(
                     server: server,
                     client: client,
+                    tagFilter: workspace.conversationTagFilter,
                     selectedConversationID: $model.selectedConversationID,
                     onOpen: { model.open(.conversation($0)) },
                     onNewSession: { model.open(.newSession(NewSessionRequest())) }

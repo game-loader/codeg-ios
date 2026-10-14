@@ -55,6 +55,24 @@ enum SettingsLeaf: Hashable {
     init?(slug: String) { guard slug == "appearance" else { return nil }; self = .appearance }
 }
 protocol SessionEventStream {}
+// Tags are independent of navigation in this architecture-only harness.
+// Real HTTP/generation/tag semantics run in ConversationTagIsolationTests.
+@MainActor final class ConversationTagsModel {
+    init(client: CodegClient) {}
+    var isUnsupported = false
+    var isRetired = false
+    var catalogRevision = 0
+    var catalogTagIDs: [Int] = []
+    func load() async {}
+    func retire() { isRetired = true }
+}
+@MainActor final class SessionTagFilter {
+    init() {}
+    func clear() {}
+    func acceptCatalog(tagIDs: [Int]) {}
+    func retire() {}
+}
+
 // Only transport is doubled: bound clients share an initiating fixture. The
 // real catalog, ActivityModel and merged projection consume its endpoint data.
 @MainActor final class SnapshotFixture {

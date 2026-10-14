@@ -1,6 +1,787 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Conversation tags require a newer Codeg Server.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会话标签需要更新版本的 Codeg Server。"
+          }
+        }
+      }
+    },
+    "The folder's tag scope is unavailable.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此文件夹的标签范围不可用。"
+          }
+        }
+      }
+    },
+    "This tag editor belongs to another conversation.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此标签编辑器属于另一个会话。"
+          }
+        }
+      }
+    },
+    "This server connection was replaced or removed. Reopen UI Render settings.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此服务器连接已被替换或移除。请重新打开 UI 渲染设置。"
+          }
+        }
+      }
+    },
+    "Updating UI Render…": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在更新 UI 渲染…"
+          }
+        }
+      }
+    },
+    "UI Render disabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "UI 渲染已停用"
+          }
+        }
+      }
+    },
+    "UI Render enabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "UI 渲染已启用"
+          }
+        }
+      }
+    },
+    "Linked to another skill": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已链接到其他技能"
+          }
+        }
+      }
+    },
+    "Blocked by an existing directory": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "被现有目录阻止"
+          }
+        }
+      }
+    },
+    "Broken skill link": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "技能链接已损坏"
+          }
+        }
+      }
+    },
+    "UI Render requires Codeg server 0.35.1 or later. Upgrade this server and retry.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "UI 渲染需要 Codeg 服务器 0.35.1 或更高版本。请升级此服务器后重试。"
+          }
+        }
+      }
+    },
+    "The server returned an incomplete or mismatched UI Render result. Refresh before retrying.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器返回的 UI 渲染结果不完整或不匹配。请刷新后重试。"
+          }
+        }
+      }
+    },
+    "Could not change UI Render for this agent.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法更改此智能体的 UI 渲染设置。"
+          }
+        }
+      }
+    },
+    "The server did not confirm the requested UI Render state.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器未确认所请求的 UI 渲染状态。"
+          }
+        }
+      }
+    },
+    "The current UI Render status could not be verified. Refresh before retrying.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法验证当前 UI 渲染状态。请刷新后重试。"
+          }
+        }
+      }
+    },
+    "Tags": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "标签"
+          }
+        }
+      }
+    },
+    "Filter by Tags": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按标签筛选"
+          }
+        }
+      }
+    },
+    "Manage Tags": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "管理标签"
+          }
+        }
+      }
+    },
+    "Tag Filter Active": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在按标签筛选"
+          }
+        }
+      }
+    },
+    "Clear Tag Filter": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清除标签筛选"
+          }
+        }
+      }
+    },
+    "No Matching Tags": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有匹配的标签"
+          }
+        }
+      }
+    },
+    "No sessions match the selected tags.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有会话匹配所选标签。"
+          }
+        }
+      }
+    },
+    "Match Tags": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "匹配标签"
+          }
+        }
+      }
+    },
+    "Any Selected Tag": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任一标签"
+          }
+        }
+      }
+    },
+    "All Selected Tags": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部标签"
+          }
+        }
+      }
+    },
+    "No tags yet. Create one in Manage Tags.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂无标签，可在“管理标签”中新建。"
+          }
+        }
+      }
+    },
+    "Tag filters are kept on this device for this server workspace.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "标签筛选保留在此设备上，仅用于当前服务器工作区。"
+          }
+        }
+      }
+    },
+    "No tags yet. Create a global tag or a tag for a root folder.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂无标签，可新建全局标签或项目根目录标签。"
+          }
+        }
+      }
+    },
+    "Global tags are available everywhere on this server. Folder tags also apply to its worktrees.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全局标签可用于此服务器的所有会话。文件夹标签也适用于其工作树。"
+          }
+        }
+      }
+    },
+    "Create Tag": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建标签"
+          }
+        }
+      }
+    },
+    "Edit Tag": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑标签"
+          }
+        }
+      }
+    },
+    "Delete Tag": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除标签"
+          }
+        }
+      }
+    },
+    "Delete Tag?": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除标签？"
+          }
+        }
+      }
+    },
+    "This tag will be removed from all sessions on this server. This can't be undone.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此标签将从服务器上的所有会话中移除，无法撤销。"
+          }
+        }
+      }
+    },
+    "Retry Folder Scopes": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新加载文件夹范围"
+          }
+        }
+      }
+    },
+    "Tag": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "标签"
+          }
+        }
+      }
+    },
+    "Tag Name": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "标签名称"
+          }
+        }
+      }
+    },
+    "Tag Color": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "标签颜色"
+          }
+        }
+      }
+    },
+    "Tag Scope": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "标签范围"
+          }
+        }
+      }
+    },
+    "Global Tags": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全局标签"
+          }
+        }
+      }
+    },
+    "Unavailable Folder": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件夹不可用"
+          }
+        }
+      }
+    },
+    "A folder tag is available in that root folder and its worktrees.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件夹标签可用于该根目录及其工作树。"
+          }
+        }
+      }
+    },
+    "Session Tags": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会话标签"
+          }
+        }
+      }
+    },
+    "Edit session tags": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑会话标签"
+          }
+        }
+      }
+    },
+    "Save this session before adding tags.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存会话后即可添加标签。"
+          }
+        }
+      }
+    },
+    "No tags are available for this session.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此会话暂无可用标签。"
+          }
+        }
+      }
+    },
+    "Choose global tags or tags for this session's root folder.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择全局标签或当前会话根目录的标签。"
+          }
+        }
+      }
+    },
+    "Loading tags…": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载标签…"
+          }
+        }
+      }
+    },
+    "Loading tag scopes…": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载标签范围…"
+          }
+        }
+      }
+    },
+    "Folder scopes could not be loaded. Only global tags are available.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件夹范围加载失败，目前仅可使用全局标签。"
+          }
+        }
+      }
+    },
+    "This server configuration has changed. Reopen tags from its workspace.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器配置已更改，请从该工作区重新打开标签。"
+          }
+        }
+      }
+    },
+    "Tags require Codeg Server v0.35.1 or later. Tag filtering has been cleared.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "标签需要 Codeg Server v0.35.1 或更新版本，标签筛选已清除。"
+          }
+        }
+      }
+    },
+    "The server returned a different session. Reopen the tag picker.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器返回了其他会话，请重新打开标签选择器。"
+          }
+        }
+      }
+    },
+    "%lld more tags": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另有 %lld 个标签"
+          }
+        }
+      }
+    },
+    "UI Render": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "UI Render"
+          }
+        }
+      }
+    },
+    "UI source": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "界面源文本"
+          }
+        }
+      }
+    },
+    "Loading UI Render…": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载 UI Render…"
+          }
+        }
+      }
+    },
+    "Enable the ui-render skill for agents on this server. Ask an enabled agent to use /ui-render (or $ui-render in Codex) to create UI cards and charts.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为此服务器上的 Agent 启用 ui-render 技能，然后让 Agent 使用 /ui-render（Codex 使用 $ui-render）生成界面卡片和图表。"
+          }
+        }
+      }
+    },
+    "This server configuration was replaced or removed. Reopen UI Render settings.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器配置已替换或删除，请重新打开 UI Render 设置。"
+          }
+        }
+      }
+    },
+    "A skill named ui-render already exists in this server’s shared skill store. Rename your own skill on the server before enabling UI Render.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此服务器上已有名为 ui-render 的技能，请先在服务器上重命名该技能，再启用 UI Render。"
+          }
+        }
+      }
+    },
+    "No agents with a supported skill store are available on this server.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此服务器上暂无支持此技能的 Agent。"
+          }
+        }
+      }
+    },
+    "Agent disabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent 已停用"
+          }
+        }
+      }
+    },
+    "The existing skill entry cannot be changed here. Resolve it on this server, then refresh.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法在此处修改已有技能项，请在此服务器上处理后刷新。"
+          }
+        }
+      }
+    },
+    "Installation status unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装状态不可用"
+          }
+        }
+      }
+    },
+    "No server selected.": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未选择服务器。"
+          }
+        }
+      }
+    },
+    "Linked to Codeg": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已链接到 Codeg"
+          }
+        }
+      }
+    },
+    "Not linked": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未链接"
+          }
+        }
+      }
+    },
+    "Linked elsewhere": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已链接到其他位置"
+          }
+        }
+      }
+    },
+    "Blocked by a directory": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "被已有目录阻止"
+          }
+        }
+      }
+    },
+    "Broken link": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "链接已损坏"
+          }
+        }
+      }
+    },
+    "Enable UI Render": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用 UI Render"
+          }
+        }
+      }
+    },
   "Project Actions": {
     "localizations": {
       "en": {

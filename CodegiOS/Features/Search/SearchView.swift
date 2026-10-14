@@ -18,6 +18,9 @@ struct SearchView: View {
     @State private var recents: [String] = RecentSearches.load()
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.conversationTagFilter) private var tagFilter
+
+    private var filteredResults: [ConversationSummary] { tagFilter?.apply(to: results) ?? results }
 
     var body: some View {
         ZStack {
@@ -49,12 +52,18 @@ struct SearchView: View {
             InlineErrorView(message: error) {
                 Task { await runSearch(force: true) }
             }
-        } else if results.isEmpty, hasSearched {
+        } else if filteredResults.isEmpty, hasSearched {
+            if tagFilter?.isActive == true {
+                EmptyStateView(icon: "tag", title: "No Matching Tags",
+                               message: "No sessions match the selected tags.",
+                               actionTitle: "Clear Tag Filter", action: { tagFilter?.clear() })
+            } else {
             EmptyStateView(
                 icon: "magnifyingglass",
                 title: "No Matches",
                 message: "No sessions match \"\(trimmedQuery)\"."
             )
+            }
         } else {
             resultsList
         }
@@ -63,7 +72,10 @@ struct SearchView: View {
     private var resultsList: some View {
         ScrollView {
             LazyVStack(spacing: 10) {
-                ForEach(results) { conversation in
+                if tagFilter?.isActive == true {
+                    Button("Clear Tag Filter") { tagFilter?.clear() }
+                }
+                ForEach(filteredResults) { conversation in
                     SessionRow(
                         conversation: conversation,
                         isSelected: false,

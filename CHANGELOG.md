@@ -12,11 +12,16 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Fixed
 
+- Preserve persisted failed-turn messages and hydrate missed failure/retry details after reconnect, without replaying prompts or clearing drafts. Terminal reconnect restores the original PTY snapshot and detects exits during an offline gap.
+
 - Typing in a conversation no longer observes the compose draft in the
   transcript's parent view. Repeated read-only text layout reuses per-view
   measurements, invalidated by text, font, inset and width changes.
 
 ### Added
+
+- Codeg Server v0.35.1 conversation tags: show, assign and manage tags on the original server, filter chats with Any/All matching, and tolerate older servers without the tag endpoints.
+- Native UI Render display for supported `spec` layouts and charts, with the original source available for copy and unsupported content. UI Render can be enabled for agents in server settings.
 
 - Group repositories with the same canonical Git source into logical projects across servers, with Projects/Servers views and independent folder/identity loading. Source selection prefers upstream, then origin; host paths and execution remain separate.
 - Browse combined logical-project session history across servers and worktrees directly in the project catalog, retaining original server/location labels, completed/pinned sessions and explicit New Task destinations. Folder details keep their session and file/Git/terminal access.

@@ -19,13 +19,17 @@ struct MarkdownContent: View {
     var streaming: Bool = false
     /// Keep paragraph lines' indentation — for what a person typed.
     var keepsIndentation: Bool = false
+    /// UI specs are assistant replies, not user snippets or tool output.
+    var allowsGenerativeUI: Bool = false
 
     var body: some View {
         MarkdownBlocks(
             nodes: streaming
                 ? Self.parse(raw, keepsIndentation: keepsIndentation)
                 : Self.nodes(for: raw, keepsIndentation: keepsIndentation),
-            caret: streaming
+            caret: streaming,
+            streaming: streaming,
+            allowsGenerativeUI: allowsGenerativeUI
         )
     }
 }
@@ -36,6 +40,8 @@ private struct MarkdownBlocks: View {
     let nodes: [MarkdownNode<String>]
     var secondary = false
     var caret = false
+    var streaming = false
+    var allowsGenerativeUI = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Typography.blockSpacing) {
@@ -44,7 +50,9 @@ private struct MarkdownBlocks: View {
                     node: node,
                     isFirst: index == 0,
                     secondary: secondary,
-                    caret: caret && index == nodes.count - 1
+                    caret: caret && index == nodes.count - 1,
+                    streaming: streaming,
+                    allowsGenerativeUI: allowsGenerativeUI
                 )
             }
         }
@@ -58,6 +66,8 @@ private struct MarkdownBlockView: View {
     /// Quoted content reads a step quieter than the reply around it.
     let secondary: Bool
     let caret: Bool
+    let streaming: Bool
+    let allowsGenerativeUI: Bool
 
     private var color: Color { secondary ? Theme.textSecondary : Theme.textPrimary }
 
@@ -88,14 +98,19 @@ private struct MarkdownBlockView: View {
 
         case .quote(let children):
             // Type-erased: a quote holds blocks, which may hold quotes.
-            AnyView(MarkdownBlocks(nodes: children, secondary: true))
+            AnyView(MarkdownBlocks(nodes: children, secondary: true,
+                                   streaming: streaming, allowsGenerativeUI: allowsGenerativeUI))
                 .padding(.leading, 14)
                 .overlay(alignment: .leading) {
                     Capsule().fill(Theme.quoteBar).frame(width: 3)
                 }
 
         case .code(let language, let code):
-            CodeBlockView(code: code, language: language)
+            if allowsGenerativeUI, language?.lowercased() == "spec" {
+                GenerativeUIBlockView(source: code, streaming: streaming)
+            } else {
+                CodeBlockView(code: code, language: language)
+            }
 
         case .rule:
             Rectangle().fill(Theme.hairline).frame(height: 0.5).padding(.vertical, 4)

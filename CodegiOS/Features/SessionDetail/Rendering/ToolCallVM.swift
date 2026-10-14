@@ -105,6 +105,7 @@ enum RenderPart {
     /// marker, not a tool call. Rendered as a chrome-less centered divider; the
     /// token counts are Grok-only (codex sends none).
     case compaction(before: Int?, after: Int?, running: Bool)
+    case turnError(message: String)
     case unknown(type: String)
 }
 
@@ -171,6 +172,8 @@ enum MessageRender {
                 parts.append(.tool(ToolCallVM(
                     id: toolID ?? "result-\(idx)", rawName: "result", kind: "", state: e ? .error : .done,
                     input: nil, output: outPreview, content: nil, isError: e)))
+            case .turnError(let message):
+                parts.append(.turnError(message: message))
             case .unknown(let type):
                 parts.append(.unknown(type: type))
             }

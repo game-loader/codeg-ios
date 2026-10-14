@@ -7,6 +7,20 @@ import Foundation
 /// its output from the `/ws/events` firehose (see ``TerminalSocket``). Mirrors
 /// the web client's `terminalSpawn`/`terminalWrite`/… in `src/lib/api.ts`.
 extension CodegClient {
+    /// Existing PTY recovery operation. An untyped route 404 means an older
+    /// server; structured resource errors and authentication failures are errors.
+    func terminalSnapshot(terminalId: String) async throws -> TerminalSnapshot {
+        do {
+            return try await postJSON("terminal_snapshot", TerminalIdBody(terminalId: terminalId))
+        } catch {
+            try checkBinding()
+            if case APIError.server(404, nil, _, nil) = error {
+                throw TerminalSnapshotAPIError.unsupported
+            }
+            throw error
+        }
+    }
+
     /// Spawn a PTY in `workingDir`. The server honors a client-supplied
     /// `terminalId` (we pass a UUID so we can subscribe to its output channel
     /// *before* spawning — matching the web's subscribe-before-spawn ordering so
@@ -51,6 +65,10 @@ extension CodegClient {
     func terminalKill(terminalId: String) async throws {
         _ = try await send("terminal_kill", body: TerminalIdBody(terminalId: terminalId))
     }
+}
+
+enum TerminalSnapshotAPIError: Error, Sendable {
+    case unsupported
 }
 
 // MARK: - Request bodies

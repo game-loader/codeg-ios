@@ -140,6 +140,12 @@ enum TranscriptTimeline {
                 if !SystemText.of(turn).isEmpty {
                     nodes.append(TimelineNode(id: turn.id, content: .system(turn), agent: agent, startsGroup: true))
                 }
+                for (index, block) in turn.blocks.enumerated() {
+                    if case .turnError(let message) = block {
+                        nodes.append(TimelineNode(id: "\(turn.id)#error-\(index)", content: .error(message),
+                                                  agent: agent, startsGroup: true))
+                    }
+                }
                 i += 1
             case .assistant:
                 var j = i + 1
@@ -235,6 +241,8 @@ enum TranscriptTimeline {
             return TimelineNode(id: base,
                                 content: .compaction(before: before, after: after, running: running),
                                 agent: agent)
+        case .turnError(let message):
+            return TimelineNode(id: base, content: .error(message), agent: agent)
         case .unknown(let type):
             return TimelineNode(id: base, content: .unsupported(type), agent: agent)
         }

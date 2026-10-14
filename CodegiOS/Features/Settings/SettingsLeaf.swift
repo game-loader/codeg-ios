@@ -14,6 +14,7 @@ enum SettingsLeaf: String, Hashable, CaseIterable, Identifiable {
     case skills
     case experts
     case agents
+    case uiRender
     case modelProviders
     case quickMessages
     case versionControl
@@ -40,6 +41,7 @@ enum SettingsLeaf: String, Hashable, CaseIterable, Identifiable {
         case .skills: "Skills"
         case .experts: "Experts"
         case .agents: "Agents"
+        case .uiRender: "UI Render"
         case .modelProviders: "Model Providers"
         case .quickMessages: "Quick Messages"
         case .versionControl: "Version Control"
@@ -56,6 +58,7 @@ enum SettingsLeaf: String, Hashable, CaseIterable, Identifiable {
         case .skills: "wand.and.stars"
         case .experts: "graduationcap.fill"
         case .agents: "cpu"
+        case .uiRender: "rectangle.3.group"
         case .modelProviders: "server.rack"
         case .quickMessages: "text.bubble.fill"
         case .versionControl: "arrow.triangle.branch"
@@ -84,6 +87,10 @@ enum SettingsLeaf: String, Hashable, CaseIterable, Identifiable {
             McpSettingsView(client: client)
         case .agents:
             AgentsSettingsView(client: client)
+        case .uiRender:
+            let server = store.servers.first { $0.id == selectedServerID }
+            GenerativeUISettingsDestination(store: store, server: server)
+                .id("\(server?.id.uuidString ?? "none")|\(server?.configurationRevision.uuidString ?? "none")")
         case .chatChannels:
             ChatChannelsSettingsView(client: client)
         case .notifications:

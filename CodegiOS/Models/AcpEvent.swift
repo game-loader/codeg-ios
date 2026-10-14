@@ -65,7 +65,7 @@ enum AcpEvent: Hashable, Sendable, Decodable {
     /// refused mode switch, a failed turn about to be followed by
     /// `turn_complete`) leave the connection alive. Only `turn_complete` ends a
     /// turn; a dead connection also reports `status_changed` disconnected/error.
-    case error(message: String, code: String?)
+    case error(message: String, code: String?, details: String? = nil)
     /// A typed session failure upsert (Claude Code / Codex). A failed turn on
     /// those agents arrives as a severity-`error` record followed by a plain
     /// `turn_complete`, with no `error` event.
@@ -106,7 +106,7 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         case type, text, title, kind, status, content, meta
         case toolCallId, rawInput, rawOutput, rawOutputAppend, item, ids
         case stopReason, sessionId, conversationId, folderId
-        case used, size, messageId, blocks, message, code, textPreview
+        case used, size, messageId, blocks, message, code, details, textPreview
         case requestId, toolCall, options, questionId, questions, entries
         case approvalId, planMarkdown
         case parentToolUseId, record, notice, attempt, maxRetries, depth, queued
@@ -188,7 +188,8 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         case "error":
             self = .error(
                 message: try c.decodeIfPresent(String.self, forKey: .message) ?? "Unknown error",
-                code: try c.decodeIfPresent(String.self, forKey: .code)
+                code: try c.decodeIfPresent(String.self, forKey: .code),
+                details: try c.decodeIfPresent(String.self, forKey: .details)
             )
         case "session_failure":
             // A record that doesn't parse is dropped like any unknown event
@@ -375,13 +376,15 @@ struct LiveSessionSnapshot: Sendable, Decodable {
     let pendingUserMessageId: String?
     let nativeSteeringAvailable: Bool
     let feedback: [SessionFeedback]
+    let lastError: SessionLastError?
+    let sessionFailures: [SessionFailureRecord]
 
     private struct PendingUserMessage: Decodable { let messageId: String }
 
     private enum CodingKeys: String, CodingKey {
         case connectionId, conversationId, folderId, status, externalId, eventSeq
         case liveMessage, activeToolCalls, pendingPermission, pendingQuestion, pendingPlanApproval, pendingUserMessage
-        case nativeSteeringAvailable, feedback
+        case nativeSteeringAvailable, feedback, lastError, sessionFailures
     }
 
     init(from decoder: Decoder) throws {
@@ -400,7 +403,17 @@ struct LiveSessionSnapshot: Sendable, Decodable {
         pendingUserMessageId = (try? c.decodeIfPresent(PendingUserMessage.self, forKey: .pendingUserMessage))?.messageId
         nativeSteeringAvailable = (try? c.decodeIfPresent(Bool.self, forKey: .nativeSteeringAvailable)) ?? false
         feedback = (try? c.decodeIfPresent([SessionFeedback].self, forKey: .feedback)) ?? []
+        lastError = try? c.decodeIfPresent(SessionLastError.self, forKey: .lastError)
+        sessionFailures = (try? c.decodeIfPresent([SessionFailureRecord].self, forKey: .sessionFailures)) ?? []
     }
+}
+
+/// The latest plain ACP error, retained by the server across missed live events.
+/// Connection death is conveyed by status, never by an `Error.terminal` field.
+struct SessionLastError: Hashable, Sendable, Decodable {
+    let message: String
+    let code: String?
+    let details: String?
 }
 
 /// In-flight assistant message carried by a snapshot (Rust `LiveMessage`).

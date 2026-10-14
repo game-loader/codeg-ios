@@ -32,6 +32,8 @@ struct ContentBlockView: View {
             ToolCallCard(vm: ToolCallVM(
                 id: id ?? "result", rawName: "result", kind: "", state: isError ? .error : .done,
                 input: nil, output: outputPreview, content: nil, isError: isError))
+        case .turnError(let message):
+            InlineTurnError(message: message)
         case .unknown(let type):
             UnsupportedBlock(type: type)
         }

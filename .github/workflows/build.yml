@@ -52,6 +52,15 @@ jobs:
             -o "$RUNNER_TEMP/test-pdf-preview"
           "$RUNNER_TEMP/test-pdf-preview"
 
+      - name: Check v0.35.1 tags and bounded UI Render parsing
+        run: |
+          set -euo pipefail
+          swift scripts/test-conversation-tags.swift
+          swiftc -warnings-as-errors -D GENERATIVE_UI_PORTABLE \
+            CodegiOS/Models/GenerativeUISpec.swift CodegiOSTests/GenerativeUISpecTests.swift \
+            scripts/test-generative-ui.swift -o "$RUNNER_TEMP/test-generative-ui"
+          "$RUNNER_TEMP/test-generative-ui"
+
       - name: Install XcodeGen 2.46.0 and generate project
         run: |
           set -euo pipefail

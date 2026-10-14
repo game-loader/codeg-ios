@@ -22,6 +22,8 @@ struct SessionDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.serverWorkspaceVisible) private var workspaceVisible
+    @Environment(\.conversationTagsModel) private var tagsModel
+    @State private var tagPicker: SessionTagPickerRequest?
     @State private var showRename = false
     @State private var renameText = ""
     @State private var showDetails = false
@@ -67,6 +69,7 @@ struct SessionDetailView: View {
             if !visible {
                 showRename = false; showDetails = false; showDeleteConfirm = false
                 previewedFile = nil; shownPaper = nil
+                tagPicker = nil
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -114,6 +117,22 @@ struct SessionDetailView: View {
             // the title. Shown once loaded; for an editable draft its sheet also
             // hosts the Agent + Folder pickers, otherwise just Mode/config.
             if case .loaded = model.phase {
+                if let tagsModel {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            guard let summary = model.summary,
+                                  model.conversationID == summary.id else { return }
+                            tagPicker = SessionTagPickerRequest(tagsModel: tagsModel, conversation: summary,
+                                                                 detailModel: model, location: server.name)
+                        } label: {
+                            Image(systemName: "tag")
+                        }
+                        .disabled(!model.canManageConversation || tagsModel.isRetired)
+                        .accessibilityLabel("Session Tags")
+                        .accessibilityHint(model.canManageConversation ? Text("Edit session tags") : Text("Save this session before adding tags."))
+                        .accessibilityIdentifier("session.detail.tags")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     AgentOptionsButton(
                         agentType: model.agentTypeForUI,
@@ -180,6 +199,12 @@ struct SessionDetailView: View {
         .sheet(isPresented: $showDetails) {
             if let summary = model.summary {
                 SessionDetailsSheet(summary: summary, stats: model.sessionStats, folder: model.projectFolder)
+            }
+        }
+        .sheet(item: $tagPicker) { request in
+            ConversationTagPickerSheet(model: request.tagsModel, conversation: request.conversation,
+                                       location: request.location) { _ in
+                await request.detailModel.reload()
             }
         }
         .task(id: scenePhase) {
@@ -364,6 +389,14 @@ struct SessionDetailView: View {
             .animation(.snappy(duration: 0.26), value: model.pendingPlanApproval?.id)
         }
     }
+}
+
+private struct SessionTagPickerRequest: Identifiable {
+    let id = UUID()
+    let tagsModel: ConversationTagsModel
+    let conversation: ConversationSummary
+    let detailModel: SessionDetailViewModel
+    let location: String
 }
 
 /// A floating glass affordance that re-pins the transcript to the newest message,

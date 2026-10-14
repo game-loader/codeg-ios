@@ -67,7 +67,7 @@ struct SettingsView: View {
     /// The core AI configuration: agents and what they run with.
     private var aiSection: some View {
         EditorSection(title: "AI & Agents") {
-            leafRows([.agents, .modelProviders, .experts, .skills, .mcp])
+            leafRows([.agents, .modelProviders, .experts, .skills, .uiRender, .mcp])
         }
     }
 

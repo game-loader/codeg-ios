@@ -20,6 +20,7 @@ struct SessionRow: View {
     /// `conversation.isPinned`). `.swipeActions` doesn't work inside the list's
     /// `LazyVStack`, so a context menu is the toggle affordance.
     var onTogglePin: (() -> Void)?
+    @Environment(\.conversationTagsModel) private var tagsModel
 
     var body: some View {
         if let onTap {
@@ -46,12 +47,17 @@ struct SessionRow: View {
         HStack(spacing: 11) {
             avatar
 
-            (conversation.trimmedTitle.map { Text(verbatim: $0) } ?? Text("Untitled session"))
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(Theme.textPrimary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                (conversation.trimmedTitle.map { Text(verbatim: $0) } ?? Text("Untitled session"))
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if let tagsModel {
+                    ConversationTagChips(tagIDs: conversation.tagIds, model: tagsModel)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if let folderName {
                 Label(folderName, systemImage: "folder")

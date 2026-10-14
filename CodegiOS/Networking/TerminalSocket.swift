@@ -1,5 +1,12 @@
 import Foundation
 
+/// Injectable transport boundary; the session still owns the captured client.
+protocol TerminalSocketConnection: Sendable {
+    var frames: AsyncStream<TerminalFrame> { get }
+    func start()
+    func close()
+}
+
 /// A live WebSocket to `/ws/events` that surfaces **only** the terminal firehose
 /// frames. PTY output/exit are broadcast by the server as legacy
 /// `{channel, payload}` frames (NOT the attach protocol that ``EventStream``
@@ -14,13 +21,8 @@ import Foundation
 /// Reuses ``EventStream``'s connection plumbing (token subprotocol, websocket
 /// URL, the no-idle-timeout `streamSession`, and a keepalive ping that detects a
 /// genuinely dead socket).
-final class TerminalSocket: @unchecked Sendable {
-    enum Frame: Sendable {
-        case ready
-        case output(id: String, data: String)
-        case exit(id: String)
-        case closed(reason: String?)
-    }
+final class TerminalSocket: TerminalSocketConnection, @unchecked Sendable {
+    typealias Frame = TerminalFrame
 
     let frames: AsyncStream<Frame>
     private let continuation: AsyncStream<Frame>.Continuation
@@ -32,22 +34,23 @@ final class TerminalSocket: @unchecked Sendable {
     private var isClosed = false
 
     private static let pingInterval: TimeInterval = 20
-    private static let outputPrefix = "terminal://output/"
-    private static let exitPrefix = "terminal://exit/"
 
     init(baseURL: URL, token: String, session: URLSession = EventStream.streamSession) {
         self.token = token
         self.session = session
         self.url = EventStream.websocketURL(from: baseURL)
         var captured: AsyncStream<Frame>.Continuation!
-        self.frames = AsyncStream(bufferingPolicy: .unbounded) { captured = $0 }
+        self.frames = AsyncStream(bufferingPolicy: .bufferingOldest(4096)) { captured = $0 }
         self.continuation = captured
     }
 
     func start() {
         let protocols = ["codeg-events", "codeg-token.\(EventStream.base64URLNoPad(token))"]
         let newTask = session.webSocketTask(with: url, protocols: protocols)
-        lock.lock(); task = newTask; lock.unlock()
+        lock.lock()
+        guard !isClosed, task == nil else { lock.unlock(); return }
+        task = newTask
+        lock.unlock()
         newTask.resume()
         receiveLoop()
         scheduleNextPing()
@@ -85,8 +88,10 @@ final class TerminalSocket: @unchecked Sendable {
         lock.lock()
         let already = isClosed
         isClosed = true
+        let t = task
         lock.unlock()
         guard !already else { return }
+        t?.cancel(with: .goingAway, reason: nil)
         continuation.yield(.closed(reason: reason))
         continuation.finish()
     }
@@ -98,22 +103,11 @@ final class TerminalSocket: @unchecked Sendable {
         case .data(let d): data = d
         @unknown default: return
         }
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let channel = obj["channel"] as? String else {
-            return  // attach-protocol ({type,…}) or malformed — not ours
+        guard let frame = Frame.decode(data) else { return }
+        if case .dropped = continuation.yield(frame) {
+            // Force a fresh snapshot instead of silently losing sequenced output.
+            finish(reason: "Terminal socket buffer exceeded its limit")
         }
-        if channel == "__ready__" {
-            continuation.yield(.ready)
-        } else if channel.hasPrefix(Self.outputPrefix) {
-            let id = String(channel.dropFirst(Self.outputPrefix.count))
-            let payload = obj["payload"] as? [String: Any]
-            let text = payload?["data"] as? String ?? ""
-            if !text.isEmpty { continuation.yield(.output(id: id, data: text)) }
-        } else if channel.hasPrefix(Self.exitPrefix) {
-            let id = String(channel.dropFirst(Self.exitPrefix.count))
-            continuation.yield(.exit(id: id))
-        }
-        // Other legacy channels (folder/conversation upserts, …) are ignored.
     }
 
     // MARK: - Keepalive

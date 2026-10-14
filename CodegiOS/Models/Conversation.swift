@@ -168,6 +168,51 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
     /// sorts by this timestamp instead.
     var pinnedAt: Date? = nil
 
+    /// The server omits `tag_ids` when empty. Older servers omit it entirely.
+    var tagIds: [Int] = []
+
+    private enum CodingKeys: String, CodingKey {
+        case id, folderId, title, agentType, status, model, gitBranch, externalId
+        case messageCount, createdAt, updatedAt, pinnedAt, tagIds
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        folderId = try c.decode(Int.self, forKey: .folderId)
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+        agentType = try c.decode(AgentType.self, forKey: .agentType)
+        status = try c.decode(ConversationStatus.self, forKey: .status)
+        model = try c.decodeIfPresent(String.self, forKey: .model)
+        gitBranch = try c.decodeIfPresent(String.self, forKey: .gitBranch)
+        externalId = try c.decodeIfPresent(String.self, forKey: .externalId)
+        messageCount = try c.decode(Int.self, forKey: .messageCount)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        pinnedAt = try c.decodeIfPresent(Date.self, forKey: .pinnedAt)
+        tagIds = try c.decodeIfPresent([Int].self, forKey: .tagIds) ?? []
+    }
+
+    /// Preserve the former memberwise initializer for previews and old callers.
+    init(id: Int, folderId: Int, title: String?, agentType: AgentType,
+         status: ConversationStatus, model: String?, gitBranch: String?,
+         externalId: String?, messageCount: Int, createdAt: Date, updatedAt: Date,
+         pinnedAt: Date? = nil, tagIds: [Int] = []) {
+        self.id = id
+        self.folderId = folderId
+        self.title = title
+        self.agentType = agentType
+        self.status = status
+        self.model = model
+        self.gitBranch = gitBranch
+        self.externalId = externalId
+        self.messageCount = messageCount
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.pinnedAt = pinnedAt
+        self.tagIds = tagIds
+    }
+
     /// Non-empty, trimmed user-provided title, or `nil` for an unnamed session.
     /// Render this verbatim (user data, never localized) and fall back to a
     /// localized "Untitled session" only when it is `nil`.

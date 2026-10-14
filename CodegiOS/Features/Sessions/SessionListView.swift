@@ -42,10 +42,14 @@ struct SessionListView: View {
     /// fullscreen's `.navigationTransition(.zoom)`.
     @Namespace private var cardNS
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.conversationTagsModel) private var tagsModel
+    @Environment(\.serverWorkspaceVisible) private var workspaceVisible
+    @State private var tagsSheet: SessionTagsSheet?
 
     init(
         server: ServerProfile,
         client: CodegClient,
+        tagFilter: SessionTagFilter? = nil,
         selectedConversationID: Binding<Int?>,
         onOpen: ((Int) -> Void)? = nil,
         onNewSession: (() -> Void)? = nil,
@@ -57,7 +61,7 @@ struct SessionListView: View {
         self.onOpen = onOpen
         self.onNewSession = onNewSession
         self.serverSwitcher = serverSwitcher
-        self._viewModel = State(initialValue: SessionListViewModel(client: client))
+        self._viewModel = State(initialValue: SessionListViewModel(client: client, tagFilter: tagFilter))
     }
 
     private var searching: Bool {
@@ -110,6 +114,28 @@ struct SessionListView: View {
                     .accessibilityLabel("New Task")
                 }
             }
+            if let tagsModel {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            tagsSheet = .init(model: tagsModel, folders: viewModel.folders,
+                                              filter: viewModel.tagFilter, location: server.name, kind: .filter)
+                        } label: {
+                            Label("Filter by Tags", systemImage: "line.3.horizontal.decrease")
+                        }
+                        Button {
+                            tagsSheet = .init(model: tagsModel, folders: viewModel.folders,
+                                              filter: viewModel.tagFilter, location: server.name, kind: .manage)
+                        } label: {
+                            Label("Manage Tags", systemImage: "tag")
+                        }
+                    } label: {
+                        Image(systemName: viewModel.tagFilter.isActive ? "tag.fill" : "tag")
+                    }
+                    .accessibilityLabel("Tags")
+                    .accessibilityIdentifier("session.tags")
+                }
+            }
             // No explicit refresh button — pull-to-refresh covers it (the list
             // also reloads on server switch / in-place edit).
         }
@@ -119,6 +145,20 @@ struct SessionListView: View {
         // sessions.
         .task(id: serverRevision) {
             await viewModel.reload(client: client)
+            await tagsModel?.load()
+        }
+        .sheet(item: $tagsSheet) { sheet in
+            switch sheet.kind {
+            case .filter:
+                ConversationTagFilterSheet(model: sheet.model, filter: sheet.filter,
+                                           folders: sheet.folders, location: sheet.location)
+            case .manage:
+                ConversationTagManagerView(model: sheet.model, folders: sheet.folders,
+                                           location: sheet.location)
+            }
+        }
+        .onChange(of: workspaceVisible) { _, visible in
+            if !visible { tagsSheet = nil }
         }
         // A conversation mutated from the detail screen (rename / pin / status /
         // delete) posts this; refetch so the row reflects it — or drops, if
@@ -163,6 +203,19 @@ struct SessionListView: View {
 
         return ScrollView {
             LazyVStack(spacing: 12) {
+                if let tagsModel, tagsModel.isUnsupported {
+                    ConversationTagsNotice(model: tagsModel)
+                        .padding(.horizontal, Theme.Layout.screenHMargin)
+                }
+                if viewModel.tagFilter.isActive {
+                    HStack {
+                        Label("Tag Filter Active", systemImage: "tag.fill")
+                        Spacer()
+                        Button("Clear Tag Filter") { viewModel.tagFilter.clear() }
+                    }
+                    .font(.caption)
+                    .padding(.horizontal, Theme.Layout.screenHMargin)
+                }
                 // A failed refresh over a list that still has rows: surface the
                 // error inline above the cards rather than swallowing it.
                 if let error = viewModel.error, !viewModel.conversations.isEmpty {
@@ -193,7 +246,10 @@ struct SessionListView: View {
         }
         .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.immediately)
-        .refreshable { await viewModel.refresh() }
+        .refreshable {
+            await viewModel.refresh()
+            await tagsModel?.load()
+        }
         // App Store-style zoom into the tapped group's full list. A row tap opens
         // the conversation *then* clears this binding (see `fullScreen(for:)`), so
         // the cover's dismissal reveals the already-pushed detail in one motion —
@@ -327,6 +383,10 @@ struct SessionListView: View {
             InlineErrorView(message: viewModel.error ?? "") {
                 Task { await viewModel.refresh() }
             }
+        } else if viewModel.tagFilter.isActive {
+            EmptyStateView(icon: "tag", title: "No Matching Tags",
+                           message: "No sessions match the selected tags.",
+                           actionTitle: "Clear Tag Filter", action: { viewModel.tagFilter.clear() })
         } else if searching {
             EmptyStateView(
                 icon: "magnifyingglass",
@@ -409,4 +469,16 @@ struct SessionListView: View {
         .accessibilityLabel("Server: \(server.name)")
         .accessibilityHint("Switch server")
     }
+}
+
+/// Captures the owner and folder inventory when opened; focus changes cannot
+/// redirect either sheet to a different endpoint with equal numeric IDs.
+private struct SessionTagsSheet: Identifiable {
+    enum Kind { case filter, manage }
+    let id = UUID()
+    let model: ConversationTagsModel
+    let folders: [FolderDetail]
+    let filter: SessionTagFilter
+    let location: String
+    let kind: Kind
 }

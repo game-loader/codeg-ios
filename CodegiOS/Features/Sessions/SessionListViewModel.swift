@@ -1,6 +1,49 @@
 import Foundation
 import Observation
 
+/// Local to one retained workspace generation. Numeric tag IDs never migrate
+/// to a replacement client or another server, even when they happen to match.
+@MainActor
+@Observable
+final class SessionTagFilter {
+    enum MatchMode: String, CaseIterable, Identifiable {
+        case any, all
+        var id: String { rawValue }
+    }
+
+    var selectedIDs: Set<Int> = []
+    var mode: MatchMode = .any
+    var isActive: Bool { !selectedIDs.isEmpty }
+
+    func matches(tagIDs: [Int]) -> Bool {
+        guard isActive else { return true }
+        let assigned = Set(tagIDs)
+        switch mode {
+        case .any: return !selectedIDs.isDisjoint(with: assigned)
+        case .all: return selectedIDs.isSubset(of: assigned)
+        }
+    }
+
+    /// Also usable for server-side search results; filtering preserves their
+    /// existing order rather than applying a second sort.
+    func apply(to conversations: [ConversationSummary]) -> [ConversationSummary] {
+        conversations.filter { matches(tagIDs: $0.tagIds) }
+    }
+
+    /// Call only with a successfully accepted full catalog. Failed reads keep
+    /// both cached tags and selections intact.
+    func acceptCatalog(tagIDs: [Int]) {
+        selectedIDs.formIntersection(tagIDs)
+    }
+
+    func clear() { selectedIDs = [] }
+
+    func retire() {
+        clear()
+        mode = .any
+    }
+}
+
 /// Drives ``SessionListView``: loads folders + conversations for one server and
 /// derives the *grouped* display — a "Pinned" group plus one collapsible group
 /// per folder. Pinned conversations appear ONLY in the Pinned group (ordered by
@@ -15,6 +58,7 @@ final class SessionListViewModel {
     /// edited in place (same identity, new URL/token), the view feeds in a fresh
     /// client via `reload(client:)` so subsequent fetches hit the new endpoint.
     private var client: CodegClient
+    let tagFilter: SessionTagFilter
 
     /// The full folder set (`list_all_folder_details`); used only for the by-id
     /// `folderNames` label lookup (so a worktree/chat folder id still resolves).
@@ -50,8 +94,9 @@ final class SessionListViewModel {
     /// rows. The first miss is hidden; the second surfaces it.
     private static let failuresBeforeAlerting = 2
 
-    init(client: CodegClient) {
+    init(client: CodegClient, tagFilter: SessionTagFilter? = nil) {
         self.client = client
+        self.tagFilter = tagFilter ?? SessionTagFilter()
     }
 
     /// `true` once a successful load has populated `conversations`/`folders`.
@@ -113,7 +158,7 @@ final class SessionListViewModel {
     /// included — even empty ones, so their collapsible header still shows; when
     /// searching, folders with no matching conversation are dropped.
     func folderGroups(searchText: String) -> [FolderGroup] {
-        let searching = !trimmed(searchText).isEmpty
+        let searching = !trimmed(searchText).isEmpty || tagFilter.isActive
         // Group by the merge target so a worktree's conversations land under its
         // root folder's header (matching the web), not a hidden worktree row.
         let map = childToParent
@@ -148,8 +193,9 @@ final class SessionListViewModel {
     /// Filter a slice of conversations by the search query (title / model).
     private func matching(_ convs: [ConversationSummary], _ searchText: String) -> [ConversationSummary] {
         let query = trimmed(searchText)
-        guard !query.isEmpty else { return convs }
         return convs.filter { conv in
+            guard tagFilter.matches(tagIDs: conv.tagIds) else { return false }
+            guard !query.isEmpty else { return true }
             if conv.displayTitle.localizedCaseInsensitiveContains(query) { return true }
             if let model = conv.model, model.localizedCaseInsensitiveContains(query) { return true }
             return false
@@ -188,6 +234,7 @@ final class SessionListViewModel {
     /// Identity of the endpoint the current data was loaded from, so a `.task`
     /// re-invocation with an unchanged endpoint doesn't needlessly wipe the list.
     private var loadedEndpoint: String?
+    private var loadedBindingID: UUID?
 
     /// (Re)load against a possibly-new client. Called from `.task(id:)` keyed on
     /// the server + endpoint, so when the selected server is edited in place
@@ -199,9 +246,12 @@ final class SessionListViewModel {
     func reload(client: CodegClient) async {
         let endpoint = "\(client.baseURL.absoluteString)|\(client.token)"
         let endpointChanged = endpoint != loadedEndpoint
+        let sourceChanged = endpointChanged || loadedBindingID != client.bindingLifetime?.id
+        if loadedEndpoint != nil, sourceChanged { tagFilter.retire() }
         self.client = client
         loadedEndpoint = endpoint
-        await fetch(isInitial: true, force: endpointChanged)
+        loadedBindingID = client.bindingLifetime?.id
+        await fetch(isInitial: true, force: sourceChanged)
     }
 
     /// Pull-to-refresh / toolbar refresh. Keeps the current list on screen

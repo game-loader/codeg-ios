@@ -174,6 +174,7 @@ struct MultiServerProjectListView: View {
             VStack(alignment: .leading, spacing: 3) {
                 SessionRow(conversation: session.conversation,
                            isSelected: owner.model.selectedConversationID == session.reference.conversationID)
+                    .environment(\.conversationTagsModel, owner.conversationTags)
                 HStack(spacing: 8) {
                     Label { Text(verbatim: owner.server.name) } icon: { Image(systemName: "server.rack") }
                     Label {
@@ -327,6 +328,7 @@ struct MultiServerProjectListView: View {
         await withTaskGroup(of: Void.self) { group in
             for owner in registry.workspaces where !owner.isRetired {
                 group.addTask { await owner.projectCatalog.refresh(force: true) }
+                group.addTask { await owner.conversationTags?.load() }
                 // History keeps its existing pulse; a held conversation does not
                 // delay publication or navigation of the independent catalog.
                 group.addTask { await owner.activity.refresh(client: owner.client) }

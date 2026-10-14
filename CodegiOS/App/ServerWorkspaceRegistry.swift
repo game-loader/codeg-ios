@@ -22,6 +22,9 @@ final class ServerWorkspace: Identifiable {
     let model: AppModel
     let lifetime: ServerBindingLifetime
     let projectCatalog: ProjectCatalogModel
+    let conversationTags: ConversationTagsModel?
+    let conversationTagFilter = SessionTagFilter()
+    @ObservationIgnored private var acceptedTagCatalogRevision = 0
     @ObservationIgnored private var sessions: [String: SessionDetailViewModel] = [:]
     @ObservationIgnored private let eventStreamFactory: (() -> any SessionEventStream)?
     var activity: ActivityModel { model.activity }
@@ -36,6 +39,7 @@ final class ServerWorkspace: Identifiable {
         self.eventStreamFactory = eventStreamFactory
         self.client = client?.bound(to: lifetime)
         self.projectCatalog = ProjectCatalogModel(client: self.client, lifetime: lifetime)
+        self.conversationTags = self.client.map { ConversationTagsModel(client: $0) }
         self.model = AppModel(serverStore: store, serverID: server.id,
                               fixedClient: self.client)
     }
@@ -45,6 +49,25 @@ final class ServerWorkspace: Identifiable {
     }
 
     func rename(_ server: ServerProfile) { self.server = server }
+
+    func refreshConversationTags() async {
+        guard !isRetired, let conversationTags else { return }
+        await conversationTags.load()
+        synchronizeConversationTagFilter()
+    }
+
+    /// Revision advances only for a successful full catalog. A mutation or a
+    /// failed refresh cannot turn the cached list into authoritative absence.
+    func synchronizeConversationTagFilter() {
+        guard !isRetired, let conversationTags else { return }
+        if conversationTags.isUnsupported || conversationTags.isRetired {
+            conversationTagFilter.clear()
+            return
+        }
+        guard conversationTags.catalogRevision > acceptedTagCatalogRevision else { return }
+        acceptedTagCatalogRevision = conversationTags.catalogRevision
+        conversationTagFilter.acceptCatalog(tagIDs: conversationTags.catalogTagIDs)
+    }
 
     func session(conversationID: Int) -> SessionDetailViewModel? {
         guard !isRetired, let client else { return nil }
@@ -77,6 +100,8 @@ final class ServerWorkspace: Identifiable {
     /// sends recovered content to a replacement endpoint.
     func retire() -> [RecoveredServerDraft] {
         guard !isRetired else { return [] }
+        conversationTags?.retire()
+        conversationTagFilter.retire()
         projectCatalog.retire()
         lifetime.invalidate()
         var retiredModels: Set<ObjectIdentifier> = []

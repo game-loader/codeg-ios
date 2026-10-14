@@ -43,6 +43,8 @@ enum ContentBlock: Hashable, Sendable, Decodable {
     /// / `completed` / `failed`); nil means UNKNOWN, never "settled".
     case toolUse(id: String?, name: String, inputPreview: String?, meta: AnyJSON?, status: String? = nil)
     case toolResult(id: String?, outputPreview: String?, isError: Bool)
+    /// A persisted failed turn from the adapter, distinct from assistant prose.
+    case turnError(message: String)
     case unknown(type: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -50,7 +52,7 @@ enum ContentBlock: Hashable, Sendable, Decodable {
         // here already camelCased — match them in camelCase.
         case type, text, data, mimeType, uri, revisedPrompt, image
         case toolUseId, toolName, inputPreview, meta, status
-        case outputPreview, isError
+        case outputPreview, isError, message
     }
 
     init(from decoder: Decoder) throws {
@@ -88,6 +90,8 @@ enum ContentBlock: Hashable, Sendable, Decodable {
                 outputPreview: try c.decodeIfPresent(String.self, forKey: .outputPreview),
                 isError: try c.decodeIfPresent(Bool.self, forKey: .isError) ?? false
             )
+        case "turn_error":
+            self = .turnError(message: try c.decodeIfPresent(String.self, forKey: .message) ?? "")
         default:
             self = .unknown(type: type)
         }

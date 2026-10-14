@@ -17,7 +17,7 @@ struct NodeBody: View {
         case .system(let turn):
             SystemNodeBody(turn: turn)
         case .assistantText(let s):
-            MarkdownContent(raw: s)
+            MarkdownContent(raw: s, allowsGenerativeUI: true)
         case .liveText(let run, let streaming):
             LiveTextNode(run: run, streaming: streaming)
         case .reasoning(let t):
@@ -184,7 +184,7 @@ private struct LiveTextNode: View {
     let streaming: Bool
 
     var body: some View {
-        MarkdownContent(raw: run.text, streaming: streaming)
+        MarkdownContent(raw: run.text, streaming: streaming, allowsGenerativeUI: true)
     }
 }
 
@@ -362,10 +362,7 @@ struct InlineTurnError: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Theme.danger)
-            Text(message)
-                .font(.caption)
-                .foregroundStyle(Theme.danger)
-                .fixedSize(horizontal: false, vertical: true)
+            SelectablePlainText(text: message, color: Theme.danger)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
