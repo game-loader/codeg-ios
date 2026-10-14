@@ -539,6 +539,11 @@ final class SessionFailureSnapshotTests: XCTestCase {
                         && h.model.liveTurn?.errorMessage == nil
                 }
                 XCTAssertEqual(h.model.pendingUserTurns, [pendingUser])
+                // This variant now owns a streamed reply, whose content must
+                // survive a user-only disk read. The error-only persistence
+                // controls below belong to the connected/dead variants.
+                XCTAssertTrue(h.model.liveTurn?.hasContent == true)
+                return
             }
             h.server.setDetailPayload(detail)
             h.nextSnapshot = try snapshot(lastError: ["message": "Empty reply", "code": "turn_failed_empty"])
