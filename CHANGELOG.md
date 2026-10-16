@@ -12,6 +12,9 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Fixed
 
+- Inline formulas written with single dollars, such as `$\sum_i p_i v_i$` or
+  `$p_i$`, render as math when they clearly contain TeX, matching the desktop
+  and web. Prices, shell variables, a bare `$x$` and code stay literal.
 - The agent options sheet of an existing conversation shows the mode, model and
   thinking effort its own session resumes with (for example ones picked on the
   desktop), instead of this device's last-used defaults. Needs a codeg server

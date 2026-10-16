@@ -141,4 +141,33 @@ final class MarkdownMathTests: XCTestCase {
         XCTAssertTrue(masked.formulas.isEmpty)
         XCTAssertEqual(masked.text, raw)
     }
+
+    func testSingleDollarFormulasThatHoldTeXAreMaskedInline() throws {
+        let raw = #"期望值由 $\sum_i p_i \cdot v_i$（各桶概率）决定，区间 $[v_{\min}, v_{\max}]$，概率 $p_i$。"#
+        let masked = MarkdownMath.maskInline(raw)
+
+        XCTAssertEqual(
+            Set(masked.formulas.values.map(\.latex)),
+            Set([#"\sum_i p_i \cdot v_i"#, #"[v_{\min}, v_{\max}]"#, "p_i"])
+        )
+        XCTAssertTrue(masked.formulas.values.allSatisfy { !$0.display })
+        let sum = try XCTUnwrap(masked.formulas.values.first { $0.latex.hasPrefix(#"\sum"#) })
+        XCTAssertEqual(sum.source, #"$\sum_i p_i \cdot v_i$"#)
+        XCTAssertFalse(masked.text.contains("$"))
+    }
+
+    func testSingleDollarProseCodeAndEscapesStayLiteral() {
+        for raw in [
+            "Between $5 and $10_000 a year.",
+            "Run `echo $HOME_DIR` and `$x_i$`.",
+            "Spend US$5_000 or $5-$10a.",
+            #"Literal \$x_1$ and $a_b $ stay."#,
+            "${VAR} and ${HOME}_x are shell.",
+            "first $a_1\nsecond b_2$",
+        ] {
+            let masked = MarkdownMath.maskInline(raw)
+            XCTAssertTrue(masked.formulas.isEmpty, raw)
+            XCTAssertEqual(masked.text, raw)
+        }
+    }
 }

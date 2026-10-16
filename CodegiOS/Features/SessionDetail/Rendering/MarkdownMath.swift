@@ -16,9 +16,10 @@ public enum MarkdownMath {
     }
 
     /// Replaces closed `\(...\)`, `\[...\]`, and `$$...$$` spans with unique
-    /// alphanumeric markers. Single-dollar math is intentionally unsupported.
-    /// Code spans, link destinations, escaped delimiters, and unclosed spans
-    /// remain byte-for-byte literal.
+    /// alphanumeric markers. A single-line `$...$` is masked only when it
+    /// unmistakably holds TeX (see `singleDollarFormula`), so currency and shell
+    /// variables stay prose. Code spans, link destinations, escaped delimiters,
+    /// and unclosed spans remain byte-for-byte literal.
     public static func maskInline(_ raw: String) -> (text: String, formulas: [String: Formula]) {
         let characters = Array(raw)
         var output = String()
@@ -103,8 +104,10 @@ public enum MarkdownMath {
             return nil
         }
 
-        guard characters[index] == "$", index + 1 < characters.count,
-              characters[index + 1] == "$" else { return nil }
+        guard characters[index] == "$" else { return nil }
+        guard index + 1 < characters.count, characters[index + 1] == "$" else {
+            return singleDollarFormula(in: characters, from: index)
+        }
 
         var cursor = index + 2
         while cursor + 1 < characters.count {
@@ -117,6 +120,62 @@ public enum MarkdownMath {
             cursor += 1
         }
         return nil
+    }
+
+    /// A single-line `$...$` that unmistakably holds TeX — the same rule as the
+    /// desktop and web renderer (`normalizeMathDelimiters` in codeg's
+    /// `message.tsx`), so one message renders alike everywhere.
+    ///
+    /// Delimiters follow Pandoc's `tex_math_dollars` boundaries: the opener is
+    /// followed by a non-space, the closer is preceded by one and is not
+    /// followed by a digit. Neither may touch another `$`, the opener may not be
+    /// escaped or glued to an ASCII word (`US$5`), and the closer may not run
+    /// into one (`$5-$10a`). `\$` inside the span is an escape, never the closer.
+    /// These alone keep `$9.99 or $19.99` and `$HOME and $PATH` literal; the body
+    /// must then contain a TeX command, sub/superscript or brace, so a bare `$x$`
+    /// stays literal too.
+    private static func singleDollarFormula(in characters: [Character], from index: Int) -> Match? {
+        if index > 0 {
+            let before = characters[index - 1]
+            if before == "\\" || before == "$" || isASCIIWord(before) { return nil }
+        }
+        let bodyStart = index + 1
+        guard bodyStart < characters.count, characters[bodyStart] != "$",
+              !characters[bodyStart].isWhitespace else { return nil }
+
+        var cursor = bodyStart
+        while cursor < characters.count, characters[cursor] != "$" {
+            if characters[cursor].isNewline { return nil }
+            if characters[cursor] == "\\" {
+                guard cursor + 1 < characters.count, !characters[cursor + 1].isNewline else { return nil }
+                cursor += 2
+            } else {
+                cursor += 1
+            }
+        }
+        guard cursor < characters.count, !characters[cursor - 1].isWhitespace else { return nil }
+        if cursor + 1 < characters.count {
+            let after = characters[cursor + 1]
+            if after == "$" || isASCIIWord(after) { return nil }
+        }
+
+        let latex = String(characters[bodyStart..<cursor])
+        guard looksLikeTeX(latex) else { return nil }
+        return Match(end: cursor + 1, latex: latex, display: false)
+    }
+
+    private static func looksLikeTeX(_ latex: String) -> Bool {
+        let characters = Array(latex)
+        for (offset, character) in characters.enumerated() {
+            if character == "^" || character == "_" || character == "{" || character == "}" { return true }
+            if character == "\\", offset + 1 < characters.count,
+               characters[offset + 1].isASCII, characters[offset + 1].isLetter { return true }
+        }
+        return false
+    }
+
+    private static func isASCIIWord(_ character: Character) -> Bool {
+        character.isASCII && (character.isLetter || character.isNumber || character == "_")
     }
 
     private static func countRun(of character: Character, in characters: [Character], from index: Int) -> Int {
