@@ -6,12 +6,15 @@ import Observation
 ///
 /// Source of truth is the AUTHORITATIVE live session snapshot
 /// (`acp_get_session_snapshot_by_conversation`, injected as `loadSnapshot`), which
-/// reflects the real chat session's current mode/config. When no live session
-/// exists yet, it falls back to a server-side *probe* agent
-/// (`acp_describe_agent_options`) just to enumerate the catalog (its `current_*`
-/// are fresh-session defaults). The snapshot query is cheap (no spawn) and the
-/// sheet auto-loads it on open; when there's no live session and no cached
-/// catalog, it also auto-runs the probe (no manual "Load options" tap).
+/// reflects the real chat session's current mode/config. When an existing
+/// conversation has no live session, the sheet resumes it (`resumeConnection`)
+/// and reads that snapshot instead, since the server restores the session's own
+/// last selectors. Only when there is nothing to resume (drafts) does it fall
+/// back to a server-side *probe* agent (`acp_describe_agent_options`) just to
+/// enumerate the catalog (its `current_*` are fresh-session defaults). The
+/// snapshot query is cheap (no spawn) and the sheet auto-loads it on open; when
+/// there's no live session and no cached catalog, it also auto-runs the probe
+/// (no manual "Load options" tap).
 ///
 /// Applying targets the live *chat* connection via the injected
 /// `resolveConnection` closure (which validates connection liveness — see
@@ -45,6 +48,14 @@ final class AgentOptionsModel {
     /// this conversation (nil when no live session exists).
     var loadSnapshot: (() async throws -> SessionSnapshot?)?
 
+    /// Injected by the owner to resume this conversation's own agent session and
+    /// return its connection id — nil when there is none to resume (a draft, or a
+    /// conversation the agent never started). The server restores a resumed
+    /// session's last mode/config (possibly picked on another device) ahead of
+    /// this device's saved defaults, so its snapshot is the truth the sheet must
+    /// show; neither the probe catalog nor `SelectorPrefsStore` knows it.
+    var resumeConnection: (() async throws -> String?)?
+
     private(set) var phase: Phase = .idle
     private(set) var snapshot: AgentOptionsSnapshot?
 
@@ -73,6 +84,9 @@ final class AgentOptionsModel {
 
     /// Bounded reconcile poll after an apply (~2.3s total).
     private static let reconcileAttempts = 6
+
+    /// Bounded wait for a resumed session's connect-time selector replay (~5s).
+    private static let resumeReadyAttempts = 20
 
     init(client: CodegClient) {
         self.client = client
@@ -111,13 +125,23 @@ final class AgentOptionsModel {
                 return
             }
             if Task.isCancelled { return }
-            // 2) No live session — show a previously fetched catalog if we have one
-            //    (highlights are defaults, not authoritative).
+            // 2) An existing conversation with no live session: resume its own
+            //    session so the sheet shows the mode/config it will actually run
+            //    with, not this device's defaults.
+            if let snap = await self.resumedSnapshot() {
+                if Task.isCancelled { return }
+                self.cache[agentType] = snap.asOptionsSnapshot
+                self.applyAuthoritative(snap)
+                return
+            }
+            if Task.isCancelled { return }
+            // 3) No session to resume — show a previously fetched catalog if we
+            //    have one (highlights are defaults, not authoritative).
             if let cached = self.cache[agentType] {
                 self.applyCatalog(cached)
                 return
             }
-            // 3) Otherwise auto-run the probe (formerly the manual "Load options"
+            // 4) Otherwise auto-run the probe (formerly the manual "Load options"
             //    tap) so opening the sheet loads the config on its own.
             self.load()
         }
@@ -172,6 +196,31 @@ final class AgentOptionsModel {
     private func fetchSnapshot() async throws -> SessionSnapshot? {
         guard let loadSnapshot else { return nil }
         return try await loadSnapshot()
+    }
+
+    /// Resume this conversation's session (see `resumeConnection`) and return its
+    /// snapshot once the connect-time selector replay has finished. Nil when there
+    /// is nothing to resume or it fails or stalls — the caller then falls back to
+    /// the catalog. The resolved connection is the one the next send reuses.
+    private func resumedSnapshot() async -> SessionSnapshot? {
+        guard let resumeConnection else { return nil }
+        let previous = phase
+        phase = .loading
+        defer { if phase == .loading { phase = previous } }
+        // `try?` flattens the closure's `String?`: nil covers "nothing to resume"
+        // and a failed resolve alike.
+        guard let connectionId = try? await resumeConnection() else { return nil }
+        // `selectorsReady` flips after the server has replayed the session's
+        // selectors, so an earlier snapshot can still show the agent's defaults.
+        for attempt in 0..<Self.resumeReadyAttempts {
+            if Task.isCancelled { return nil }
+            if let snap = try? await client.connectionSnapshot(connectionId: connectionId) {
+                if !snap.isConnectionAlive { return nil }
+                if snap.selectorsReady { return snap.hasSelectors ? snap : nil }
+            }
+            try? await Task.sleep(for: .milliseconds(attempt == 0 ? 100 : 250))
+        }
+        return nil
     }
 
     /// Adopt authoritative current mode/config from the live snapshot (overwrites

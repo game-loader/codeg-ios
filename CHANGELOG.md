@@ -12,6 +12,11 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Fixed
 
+- The agent options sheet of an existing conversation shows the mode, model and
+  thinking effort its own session resumes with (for example ones picked on the
+  desktop), instead of this device's last-used defaults. Needs a codeg server
+  that restores each session's selectors on resume.
+
 - Preserve persisted failed-turn messages and hydrate missed failure/retry details after reconnect, without replaying prompts or clearing drafts. Terminal reconnect restores the original PTY snapshot and detects exits during an offline gap.
 
 - Typing in a conversation no longer observes the compose draft in the

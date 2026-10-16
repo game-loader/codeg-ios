@@ -342,6 +342,15 @@ final class SessionDetailViewModel {
             guard let self, let id = self.conversationID else { return nil }
             return try await self.client.sessionSnapshot(conversationId: id)
         }
+        // A conversation that has run before resumes its own session for the
+        // sheet: the server restores that session's last mode/config (possibly
+        // set on another device), which the probe catalog can't know. The
+        // resolved connection is cached, so the next send reuses it.
+        agentOptions.resumeConnection = { [weak self] in
+            guard let self, self.conversationID != nil,
+                  let sessionId = self.summary?.externalId, !sessionId.isEmpty else { return nil }
+            return try await self.resolveConnectionForOptions()
+        }
 
         // Agents, quick messages + experts are connection-independent catalog reads.
         // Slash commands come from the cheap by-conversation snapshot (empty until
